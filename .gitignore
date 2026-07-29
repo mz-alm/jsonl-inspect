@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# Local sandbox / temp data
+scratch/
+*.jsonl.bak
+*.jsonl.backup-*
+
+# Vendor bundling artifacts (the bundle itself in static/vendor/ IS committed)
+vendor-src/node_modules/
+vendor-src/package-lock.json

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jsonl-inspect"
+version = "0.1.0"
+description = "Browser-based inspector and editor for Claude Code session JSONL files"
+requires-python = ">=3.11"
+authors = [{ name = "Mizael Almeida", email = "mizael.almeida@salvy.com.br" }]
+dependencies = [
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+jsonl-inspect = "jsonl_inspect.server:main"
+
+[tool.setuptools.packages.find]
+include = ["jsonl_inspect*"]
+
+[tool.setuptools.package-data]
+jsonl_inspect = ["../static/*"]

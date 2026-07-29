@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>jsonl-inspect</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div id="picker" class="picker" hidden>
+      <header class="picker-topbar">
+        <div class="brand">jsonl-inspect</div>
+        <div class="picker-subtitle" id="picker-subtitle">browsing ~/.claude/projects/</div>
+      </header>
+      <div class="picker-layout">
+        <aside class="picker-projects" aria-label="Projects">
+          <h2>projects</h2>
+          <ul id="picker-projects-list" class="picker-list"></ul>
+        </aside>
+        <section class="picker-sessions" aria-label="Sessions">
+          <h2 id="picker-sessions-heading">sessions</h2>
+          <ul id="picker-sessions-list" class="picker-list"></ul>
+        </section>
+      </div>
+    </div>
+
+    <div id="inspector" hidden>
+    <header id="topbar">
+      <button id="back-to-picker" class="back-to-picker" type="button" title="Return to the session picker">← projects</button>
+      <div class="brand">jsonl-inspect</div>
+      <div class="file-meta">
+        <span id="filename">loading…</span>
+        <span class="dot">·</span>
+        <span id="record-count" title="records reachable from the active tip / total records in the file">— records</span>
+        <span class="dot">·</span>
+        <span id="wire-bytes" title="estimated bytes of the messages array Claude Code would send on the next API request (simulating its buildApiMessages pipeline: chain walk + sibling-merge + tool_result reattach, then strip local-only fields). Does not include system prompt + tools (~70KB fixed overhead).">— wire</span>
+        <span class="dot">/</span>
+        <span id="total-bytes" title="total file size on disk">— file</span>
+        <span class="dot">·</span>
+        <span id="preflight-tokens" class="preflight-tokens" title="cached preflight value: usage.input_tokens from the latest in-chain assistant. This is what Claude Code's preflight check reads BEFORE firing the next API request, and what the statusline displays. When it diverges from estimated wire tokens after a strip/trim, the preflight may block new requests — use 'refresh preflight usage' to reset.">— preflight</span>
+      </div>
+      <div id="pending-controls" class="pending-controls" data-pending="0">
+        <button id="pending-count" class="pending-count" type="button" disabled title="Show staged changes">no changes</button>
+        <button id="undo-btn" type="button" disabled title="Undo the last staged operation">undo</button>
+        <button id="discard-btn" type="button" disabled title="Discard all staged changes">discard</button>
+        <button id="save-btn" type="button" disabled title="Save all staged changes to disk">save</button>
+      </div>
+      <button id="backups-btn" class="backups-btn" type="button" title="Browse and restore from timestamped backups">backups</button>
+      <button id="selection-toggle" class="selection-toggle" type="button" title="Toggle multi-select mode for bulk operations">select</button>
+    </header>
+
+    <div id="selection-bar" class="selection-bar" hidden>
+      <span class="selection-bar-label">selection mode</span>
+      <span class="dot">·</span>
+      <span id="selection-count">0 selected</span>
+      <span class="selection-bar-spacer"></span>
+      <button id="clear-selection-btn" type="button" disabled>clear</button>
+      <button id="bulk-pluck-btn" type="button" disabled>pluck selected</button>
+      <button id="exit-selection-btn" type="button">exit</button>
+    </div>
+
+    <main id="layout">
+      <section id="records" aria-label="Record list">
+        <div class="empty">Loading session…</div>
+      </section>
+
+      <aside id="sidebar" aria-label="Stats panel">
+        <section class="panel panel-static">
+          <div class="search-row">
+            <input
+              type="search"
+              id="search-input"
+              placeholder="search previews…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <span id="search-count" class="search-count"></span>
+          </div>
+        </section>
+
+        <section class="panel collapsed" id="quick-actions-panel">
+          <h2>quick actions</h2>
+          <div class="panel-body">
+            <div class="quick-action qa-primary">
+              <button id="prune-btn" class="qa-btn qa-btn-primary" type="button">
+                ✦ prune (thinking + tools)
+              </button>
+              <label class="qa-input-row">
+                <span>keep thinking</span>
+                <input type="number" id="prune-keep-thinking" value="1" min="0" step="1" />
+                <span>keep tools</span>
+                <input type="number" id="prune-keep-tools" value="3" min="0" step="1" />
+              </label>
+              <div class="qa-help">
+                One click: strip thinking blocks <em>and</em> trim bulky tool
+                content — the two most-common reclamation steps together.
+                Stages two reversible ops (undo reverses them one at a time).
+              </div>
+            </div>
+
+            <div class="quick-action">
+              <button id="strip-thinking-btn" class="qa-btn" type="button">
+                strip thinking blocks
+              </button>
+              <label class="qa-input-row">
+                <span>keep last</span>
+                <input
+                  type="number"
+                  id="strip-thinking-keep"
+                  value="1"
+                  min="0"
+                  step="1"
+                />
+              </label>
+              <div class="qa-help">
+                Removes thinking blocks from chain-reachable assistant
+                records (preserves last N intact). Reversible.
+              </div>
+            </div>
+
+            <div class="quick-action">
+              <button id="refresh-preflight-btn" class="qa-btn" type="button">
+                refresh preflight usage
+              </button>
+              <label class="qa-input-row">
+                <span>input_tokens override</span>
+                <input
+                  type="number"
+                  id="refresh-preflight-tokens"
+                  placeholder="auto"
+                  min="0"
+                  step="1"
+                />
+              </label>
+              <div class="qa-help">
+                Resets <code>usage.input_tokens</code> on the latest in-chain
+                assistant to bypass Claude Code's preflight context-window
+                check. Use after strip/trim if the statusline still reports
+                the pre-mutation context value and blocks new requests.
+                Auto-defaults to estimated wire tokens. Reversible.
+              </div>
+            </div>
+
+            <div class="quick-action">
+              <button id="trim-tool-calls-btn" class="qa-btn" type="button">
+                trim tool calls
+              </button>
+              <label class="qa-input-row">
+                <span>keep last</span>
+                <input
+                  type="number"
+                  id="trim-tool-calls-keep"
+                  value="3"
+                  min="0"
+                  step="1"
+                />
+                <span>threshold</span>
+                <input
+                  type="number"
+                  id="trim-tool-calls-threshold"
+                  value="500"
+                  min="0"
+                  step="50"
+                />
+                <span>B</span>
+              </label>
+              <label class="qa-input-row">
+                <input type="checkbox" id="trim-tool-calls-images" />
+                <span>also trim image sub-blocks (saves bytes, loses vision context)</span>
+              </label>
+              <div class="qa-help">
+                Replaces strings over the threshold in tool_use inputs and
+                tool_result content with a short placeholder. The call itself
+                stays in the transcript — file paths and other small fields
+                pass through untouched. Reversible.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>composition</h2>
+          <div class="panel-body">
+            <div class="subhead">block types (% of API content)</div>
+            <div id="composition-blocks"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>health</h2>
+          <div class="panel-body">
+            <ul id="health" class="health-list"></ul>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>filter by type</h2>
+          <div class="panel-body">
+            <div id="filter-toggles"></div>
+          </div>
+        </section>
+
+        <section class="panel collapsed" id="block-filter-panel">
+          <h2>filter by block type</h2>
+          <div class="panel-body">
+            <div id="block-filter-toggles"></div>
+            <div class="qa-help">
+              Hides records whose ONLY block types are all unchecked.
+              Mixed-content records (e.g., text + tool_use) stay visible
+              as long as one of their types is on.
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="compaction-panel" hidden>
+          <h2>compaction events</h2>
+          <div class="panel-body">
+            <ol id="compaction-events" class="ranking"></ol>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>top by size</h2>
+          <div class="panel-body">
+            <ol id="top-records" class="ranking"></ol>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <template id="record-card-template">
+      <article class="card collapsed">
+        <header class="card-header">
+          <input type="checkbox" class="card-checkbox" tabindex="-1" />
+          <span class="idx"></span>
+          <span class="type-tag"></span>
+          <span class="subtype"></span>
+          <span class="size"></span>
+          <span class="timestamp"></span>
+          <span class="preview"></span>
+          <button class="reattach-badge" type="button" hidden></button>
+          <button class="pluck-btn" type="button" title="Pluck record (unlink from chain)">✂</button>
+          <button class="edit-btn" type="button" title="Edit raw record">✎</button>
+        </header>
+        <div class="card-body" hidden></div>
+      </article>
+    </template>
+
+    <div id="backups-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-labelledby="backups-modal-title">
+        <header class="modal-header">
+          <h2 id="backups-modal-title">backups</h2>
+          <button class="modal-close" type="button" aria-label="close">×</button>
+        </header>
+        <div class="modal-body">
+          <div class="backups-explainer">
+            Each save creates a timestamped backup of the file as it was <em>before</em> the save.
+            Restoring overwrites the current file (a fresh backup is taken first so the restore is
+            also reversible). Any pending changes will be discarded.
+          </div>
+          <ul id="backups-list" class="backups-list"></ul>
+        </div>
+      </div>
+    </div>
+
+    <div id="pending-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-labelledby="pending-modal-title">
+        <header class="modal-header">
+          <h2 id="pending-modal-title">pending changes</h2>
+          <button class="modal-close" type="button" aria-label="close">×</button>
+        </header>
+        <div class="modal-body">
+          <ul id="pending-list" class="pending-list"></ul>
+        </div>
+        <footer class="modal-footer">
+          <button id="modal-discard-btn" type="button">discard all</button>
+          <button id="modal-undo-btn" type="button">undo last</button>
+          <button id="modal-save-btn" type="button">save all</button>
+        </footer>
+      </div>
+    </div>
+
+    <template id="pluck-panel-template">
+      <div class="pluck-panel">
+        <div class="pluck-header">about to pluck:</div>
+        <ul class="pluck-list"></ul>
+        <div class="pluck-explainer">
+          Plucked records stay in the file but are unlinked from the conversation chain.
+          They won't be sent to the API on resume. Reversible by restoring from backup.
+        </div>
+        <div class="pluck-actions">
+          <span class="pluck-status"></span>
+          <button class="pluck-cancel" type="button">cancel</button>
+          <button class="pluck-confirm" type="button">pluck</button>
+        </div>
+      </div>
+    </template>
+
+    <template id="edit-panel-template">
+      <div class="edit-panel">
+        <div class="edit-editor"></div>
+        <ul class="edit-warnings" hidden></ul>
+        <div class="edit-actions">
+          <span class="edit-status"></span>
+          <button class="edit-cancel" type="button">cancel</button>
+          <button class="edit-save" type="button" title="Stage this edit. Use top-bar Save to flush all staged changes to disk.">apply</button>
+        </div>
+      </div>
+    </template>
+
+    <template id="block-template">
+      <div class="block">
+        <header class="block-header">
+          <span class="block-idx"></span>
+          <span class="block-type-tag"></span>
+          <span class="block-size"></span>
+          <span class="block-preview"></span>
+        </header>
+        <pre class="block-body" hidden></pre>
+      </div>
+    </template>
+
+    </div><!-- /#inspector -->
+
+    <!-- CodeMirror 6, locally bundled via esbuild. See vendor-src/ for the
+         entry point and regeneration instructions. The bundle is self-
+         contained — no runtime CDN fetches. Exposes a small global API for
+         the non-module app.js to call. -->
+    <script type="module">
+      import { EditorView, basicSetup, json, oneDark } from "/static/vendor/codemirror.js";
+
+      window.JsonEditor = {
+        /**
+         * Mount a CodeMirror editor into `containerEl` with the given initial
+         * JSON-string `value`. `onChange(newValue)` fires after every edit.
+         * Returns a handle with .getValue() / .setValue() / .focus() / .destroy().
+         */
+        create(containerEl, value, onChange) {
+          const updateListener = EditorView.updateListener.of((u) => {
+            if (u.docChanged && typeof onChange === "function") {
+              onChange(u.state.doc.toString());
+            }
+          });
+          const view = new EditorView({
+            doc: value,
+            extensions: [basicSetup, json(), oneDark, updateListener],
+            parent: containerEl,
+          });
+          return {
+            getValue: () => view.state.doc.toString(),
+            setValue: (v) => view.dispatch({
+              changes: { from: 0, to: view.state.doc.length, insert: v },
+            }),
+            focus: () => view.focus(),
+            destroy: () => view.destroy(),
+          };
+        },
+        ready: true,
+      };
+      window.dispatchEvent(new Event("jsoneditor-ready"));
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
