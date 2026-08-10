@@ -19,6 +19,7 @@ from jsonl_inspect.parser import (
     PLUCK_FIELD,
     TRIM_PLACEHOLDER,
     Session,
+    SessionLiveError,
 )
 
 
@@ -806,3 +807,88 @@ def test_prune_sequence_strip_then_trim(tmp_path: Path) -> None:
         b.type == "tool_use" for summ in s2.summaries for b in summ.blocks
     )
     assert has_tool_use, "trim must keep the tool_use block itself"
+
+
+# ---------------------------------------------------------------------------
+# live-session guard (editing a session that's still open in Claude Code)
+
+
+def test_check_live_quiet_file(simple_chain: Path) -> None:
+    """A file nobody else is touching should read as not-live."""
+    s = Session.load(simple_chain)
+    live = s.check_live()
+    assert live["is_live"] is False
+    assert live["file_changed"] is False
+
+
+def test_check_live_detects_external_append(simple_chain: Path) -> None:
+    """An external append (what Claude Code does to a running session) must
+    be detected."""
+    s = Session.load(simple_chain)
+    with simple_chain.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "uuid": "appended", "parentUuid": None,
+            "message": {"role": "user", "content": [{"type": "text", "text": "live"}]},
+        }) + "\n")
+    live = s.check_live()
+    assert live["is_live"] is True
+    assert live["file_changed"] is True
+    assert "changed on disk" in live["detail"]
+
+
+def test_save_blocks_on_live_session(simple_chain: Path) -> None:
+    """The important one: a save into a live session must refuse rather than
+    clobber it. Pending changes survive the refusal."""
+    s = Session.load(simple_chain)
+    s.strip_thinking_blocks(keep_last_n=0)
+    assert len(s._pending_ops) > 0
+
+    with simple_chain.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "uuid": "appended2", "parentUuid": None,
+            "message": {"role": "user", "content": [{"type": "text", "text": "live"}]},
+        }) + "\n")
+
+    with pytest.raises(SessionLiveError) as excinfo:
+        s.save()
+    assert "open in Claude Code" in str(excinfo.value)
+    assert excinfo.value.detail.get("is_live") is True
+    # Nothing was lost — the user can close the session and retry.
+    assert len(s._pending_ops) > 0
+
+
+def test_save_force_overrides_live_guard(simple_chain: Path) -> None:
+    """force=True is the deliberate override."""
+    s = Session.load(simple_chain)
+    s.strip_thinking_blocks(keep_last_n=0)
+    with simple_chain.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "type": "user", "uuid": "appended3", "parentUuid": None,
+            "message": {"role": "user", "content": []},
+        }) + "\n")
+    result = s.save(force=True)
+    assert result["ops_saved"] > 0
+
+
+def test_own_save_does_not_trip_the_guard(simple_chain: Path) -> None:
+    """Our own write must re-baseline, or the second save would falsely
+    report the session as live."""
+    s = Session.load(simple_chain)
+    s.strip_thinking_blocks(keep_last_n=1)
+    s.save()
+    assert s.check_live()["is_live"] is False, "our own save tripped the guard"
+    # A second round must also go through.
+    s.mutate_field(0, "message.content", [{"type": "text", "text": "edited"}])
+    result = s.save()
+    assert result["ops_saved"] > 0
+
+
+def test_save_reports_wire_before_and_after(chain_with_tool_calls: Path) -> None:
+    """The post-save panel needs an honest before→after: 'before' is the last
+    SAVED state, not whatever the size was when save() happened to be called."""
+    s = Session.load(chain_with_tool_calls)
+    baseline = s.stats.wire_messages_bytes
+    s.trim_tool_calls(keep_last_n=0, threshold_bytes=500)
+    result = s.save()
+    assert result["wire_bytes_before"] == baseline
+    assert result["wire_bytes_after"] < baseline, "trim should shrink the wire payload"

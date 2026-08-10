@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import uuid
 from collections import Counter
@@ -332,6 +333,17 @@ def _extract_subtype(record: dict[str, Any]) -> str | None:
 
 
 PLUCK_FIELD = "_inspector_pluck"
+
+
+class SessionLiveError(RuntimeError):
+    """Raised when a save is attempted against a session that appears to be
+    open in Claude Code. Carries the check_live() detail dict so the API can
+    show the user exactly which signal fired."""
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message)
+        self.detail = detail or {}
+
 MUTATIONS_FIELD = "_inspector_mutations"
 
 # Placeholder used to replace trimmed string values in tool_use inputs and
@@ -877,6 +889,10 @@ class Session:
         # `_raw_lines` is the *working* state; mutations modify it without
         # touching `_saved_raw_lines`. discard_all() copies saved back.
         self._saved_raw_lines: list[str] = list(raw_lines)
+        # Wire size as of the last saved state. Pending edits stage across
+        # many requests, so save() must report against THIS, not against
+        # whatever the size happened to be when save was called.
+        self._saved_wire_bytes: int = stats.wire_messages_bytes
         # Operations staged since last save, in apply order. Each entry has
         # enough info to be inverted for undo and reported for display.
         # See _record_op for the schema per op type.
@@ -904,7 +920,12 @@ class Session:
 
         summaries = [_analyze_record(i, r) for i, r in enumerate(records)]
         stats = _compute_stats(records, summaries)
-        return cls(file_path, records, summaries, stats, raw_lines)
+        session = cls(file_path, records, summaries, stats, raw_lines)
+        # Baseline for live-session detection: if the file changes underneath
+        # us, Claude Code (or something else) is still appending to it.
+        session._load_mtime = file_path.stat().st_mtime
+        session._load_size = file_path.stat().st_size
+        return session
 
     def get_record(self, idx: int) -> dict[str, Any]:
         if not 0 <= idx < len(self.records):
@@ -1008,6 +1029,7 @@ class Session:
         self._modified.clear()
         self.summaries = summaries
         self.stats = _compute_stats(self.records, self.summaries)
+        self._saved_wire_bytes = self.stats.wire_messages_bytes
 
     def find_pluck_set(self, seed: int | list[int]) -> list[int]:
         """Return the set of indices that must be plucked together with the
@@ -1999,18 +2021,129 @@ class Session:
                 })
         return out
 
-    def save(self) -> dict[str, Any]:
+    def check_live(self) -> dict[str, Any]:
+        """Detect whether this session file is currently open in Claude Code.
+
+        Editing a live session is the one genuinely destructive mistake this
+        tool allows: Claude Code holds the transcript in memory and appends to
+        it, so our whole-file write either gets clobbered by its next append or
+        corrupts the file outright. Worse, it *looks* like the edit silently
+        failed, which sends people hunting for a bug that isn't there.
+
+        Two independent signals, either of which is enough to warn:
+
+        - **File changed since load** — mtime or size advanced while we've been
+          holding it. Something else is writing. Cheap and portable.
+        - **A process has the file open** — `lsof` on the path. Stronger and
+          more immediate (catches a live session that just hasn't written yet),
+          but platform-dependent, so failures here are non-fatal.
+
+        Returns a dict the API/UI can render directly. `is_live` is the
+        conservative OR of both signals.
+        """
+        result: dict[str, Any] = {
+            "is_live": False,
+            "file_changed": False,
+            "process_holding": False,
+            "detail": "",
+            "holders": [],
+        }
+        try:
+            st = self.file_path.stat()
+        except OSError:
+            result["detail"] = "file is no longer readable"
+            result["is_live"] = True
+            return result
+
+        baseline_mtime = getattr(self, "_load_mtime", None)
+        baseline_size = getattr(self, "_load_size", None)
+        if baseline_mtime is not None and (
+            st.st_mtime > baseline_mtime or st.st_size != baseline_size
+        ):
+            result["file_changed"] = True
+
+        try:
+            proc = subprocess.run(
+                ["lsof", "-t", "--", str(self.file_path)],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = [p for p in proc.stdout.split() if p.strip()]
+            if pids:
+                names = []
+                for pid in pids[:8]:
+                    try:
+                        nm = subprocess.run(
+                            ["ps", "-p", pid, "-o", "comm="],
+                            capture_output=True, text=True, timeout=2,
+                        ).stdout.strip()
+                    except (OSError, subprocess.SubprocessError):
+                        nm = ""
+                    names.append(f"{nm or '?'} (pid {pid})")
+                result["process_holding"] = True
+                result["holders"] = names
+        except (OSError, subprocess.SubprocessError):
+            # lsof missing or blocked — fall back to the mtime signal alone.
+            pass
+
+        result["is_live"] = result["file_changed"] or result["process_holding"]
+        if result["is_live"]:
+            bits = []
+            if result["process_holding"]:
+                bits.append("a process currently has this file open ("
+                            + ", ".join(result["holders"]) + ")")
+            if result["file_changed"]:
+                bits.append("the file changed on disk since it was loaded here")
+            result["detail"] = "; ".join(bits)
+        return result
+
+    def refresh_live_baseline(self) -> None:
+        """Re-baseline the live-detection markers to the file's current state.
+
+        Called after our own save, so our write doesn't look like someone
+        else's append on the next check.
+        """
+        try:
+            st = self.file_path.stat()
+            self._load_mtime = st.st_mtime
+            self._load_size = st.st_size
+        except OSError:
+            pass
+
+    def save(self, force: bool = False) -> dict[str, Any]:
         """Flush staged changes to disk atomically with a single backup of
-        the pre-save state. Returns the count of ops saved + backup path."""
+        the pre-save state. Returns the count of ops saved + backup path.
+
+        Refuses to write if the session looks live (open in Claude Code),
+        since that risks clobbering or corrupting the transcript. Pass
+        `force=True` to override deliberately.
+        """
         if not self._pending_ops:
             return {"ops_saved": 0, "backup_path": None}
+        if not force:
+            live = self.check_live()
+            if live["is_live"]:
+                raise SessionLiveError(
+                    "This session appears to be open in Claude Code — "
+                    f"{live['detail']}. Saving now would be overwritten by the "
+                    "running session (or corrupt the file). Close the session "
+                    "in Claude Code, then save again.",
+                    live,
+                )
         backup_path = _backup_file(self.file_path)
+        wire_before = getattr(self, "_saved_wire_bytes", self.stats.wire_messages_bytes)
         _atomic_write_jsonl(self.file_path, self._raw_lines)
+        self.refresh_live_baseline()
         self._saved_raw_lines = list(self._raw_lines)
         ops_saved = len(self._pending_ops)
         self._pending_ops = []
         self._refresh_stats()
-        return {"ops_saved": ops_saved, "backup_path": str(backup_path)}
+        self._saved_wire_bytes = self.stats.wire_messages_bytes
+        return {
+            "ops_saved": ops_saved,
+            "backup_path": str(backup_path),
+            "wire_bytes_before": wire_before,
+            "wire_bytes_after": self.stats.wire_messages_bytes,
+        }
 
     def discard_all(self) -> dict[str, Any]:
         """Revert all pending changes by restoring records/raw_lines/summaries

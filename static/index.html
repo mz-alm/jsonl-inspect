@@ -59,6 +59,33 @@
       <button id="exit-selection-btn" type="button">exit</button>
     </div>
 
+    <div id="live-banner" class="live-banner" hidden>
+      <span class="live-banner-icon">⚠</span>
+      <div class="live-banner-body">
+        <strong>This session looks like it's open in Claude Code.</strong>
+        <span id="live-banner-detail"></span>
+        Close it there before saving — otherwise the running session will
+        overwrite your edits (or corrupt the file). Editing here is safe;
+        <em>saving</em> is what's blocked.
+      </div>
+      <button id="live-banner-recheck" type="button">re-check</button>
+    </div>
+
+    <div id="saved-panel" class="saved-panel" hidden>
+      <div class="saved-panel-head">
+        <span class="saved-panel-icon">✓</span>
+        <strong>Saved.</strong>
+        <span id="saved-panel-summary"></span>
+        <button id="saved-panel-close" type="button" title="Dismiss">×</button>
+      </div>
+      <div class="saved-panel-next">
+        <strong>What to expect next:</strong> Claude Code's context percentage
+        won't drop right away — it reads a cached number from the last
+        response. <strong>Send one message in the session and it'll update.</strong>
+        <span id="saved-panel-preflight"></span>
+      </div>
+    </div>
+
     <main id="layout">
       <section id="records" aria-label="Record list">
         <div class="empty">Loading session…</div>

@@ -1865,3 +1865,118 @@ body.selection-mode #layout {
   color: var(--text-mute);
   border-color: var(--text-mute);
 }
+
+/* --- live-session warning banner ---------------------------------------
+   Shown whenever the session file appears to be open in Claude Code.
+   Deliberately loud: editing a live session is the one destructive
+   mistake the tool allows, and it presents as "nothing happened". */
+.live-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin: 0 0.75rem 0.5rem;
+  padding: 0.7rem 0.9rem;
+  background: rgba(180, 83, 9, 0.15);
+  border: 1px solid var(--tag-system, #b45309);
+  border-left-width: 4px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.live-banner-icon {
+  color: var(--tag-system, #b45309);
+  font-size: 1.1rem;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.live-banner-body {
+  flex: 1;
+  color: var(--text-main, #e5e7eb);
+}
+
+.live-banner-body strong {
+  color: var(--tag-system, #f59e0b);
+}
+
+#live-banner-detail {
+  display: block;
+  color: var(--text-dim, #8e96a5);
+  font-size: 0.8rem;
+  margin: 0.15rem 0;
+}
+
+.live-banner button {
+  background: transparent;
+  border: 1px solid var(--border-strong, #3a4150);
+  color: var(--text-dim, #8e96a5);
+  padding: 0.25rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+.live-banner button:hover {
+  border-color: var(--text-mute);
+  color: var(--text-main);
+}
+
+/* --- post-save panel ----------------------------------------------------
+   The other half of the "it didn't work" problem: after a correct save,
+   Claude Code's own gauge keeps showing the pre-edit number until the next
+   turn. Say so at the moment it matters, not in the README. */
+.saved-panel {
+  margin: 0 0.75rem 0.5rem;
+  padding: 0.7rem 0.9rem;
+  background: rgba(16, 122, 87, 0.14);
+  border: 1px solid #10a37f;
+  border-left-width: 4px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text-main, #e5e7eb);
+}
+
+.saved-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.saved-panel-icon {
+  color: #10a37f;
+  font-weight: 700;
+}
+
+.saved-panel-head strong {
+  color: #10a37f;
+}
+
+#saved-panel-summary {
+  flex: 1;
+  color: var(--text-dim, #8e96a5);
+}
+
+#saved-panel-close {
+  background: transparent;
+  border: none;
+  color: var(--text-mute);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+#saved-panel-close:hover { color: var(--text-main); }
+
+.saved-panel-next {
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-dim, #8e96a5);
+}
+
+.saved-panel-next strong { color: var(--text-main, #e5e7eb); }

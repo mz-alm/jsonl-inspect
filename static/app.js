@@ -166,6 +166,13 @@ const els = {
   trimToolCallsImages: document.getElementById("trim-tool-calls-images"),
   refreshPreflightBtn: document.getElementById("refresh-preflight-btn"),
   refreshPreflightTokens: document.getElementById("refresh-preflight-tokens"),
+  liveBanner: document.getElementById("live-banner"),
+  liveBannerDetail: document.getElementById("live-banner-detail"),
+  liveBannerRecheck: document.getElementById("live-banner-recheck"),
+  savedPanel: document.getElementById("saved-panel"),
+  savedPanelSummary: document.getElementById("saved-panel-summary"),
+  savedPanelPreflight: document.getElementById("saved-panel-preflight"),
+  savedPanelClose: document.getElementById("saved-panel-close"),
   backupsBtn: document.getElementById("backups-btn"),
   backupsModal: document.getElementById("backups-modal"),
   backupsList: document.getElementById("backups-list"),
@@ -1166,15 +1173,108 @@ async function handleSave() {
   els.saveBtn.disabled = true;
   els.pendingCount.textContent = "saving…";
   try {
-    const resp = await fetch("/api/save", { method: "POST" });
+    const resp = await fetch("/api/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    // 409 = the session is open in Claude Code. This is the single most
+    // common way to think the tool "didn't work", so explain it properly
+    // instead of surfacing an HTTP code.
+    if (resp.status === 409) {
+      const body = await resp.json().catch(() => ({}));
+      if (body.code === "session_live") {
+        showLiveBanner(body.live || {});
+        alert(
+          "Not saved — this session is still open in Claude Code.\n\n" +
+          (body.live && body.live.detail ? body.live.detail + "\n\n" : "") +
+          "Close the session in Claude Code, then hit save again. Your " +
+          "pending changes are still here; nothing was lost."
+        );
+        renderPendingControls();
+        return;
+      }
+      throw new Error(body.error || `HTTP ${resp.status}`);
+    }
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
     const result = await resp.json();
     state.stats = result.stats;
     renderTopBar();
+    hideLiveBanner();
+    showSavedPanel(result);
   } catch (err) {
     alert(`Save failed: ${err.message}`);
     renderPendingControls();
   }
+}
+
+// --- live-session detection ---------------------------------------------
+
+function showLiveBanner(live) {
+  if (!els.liveBanner) return;
+  els.liveBanner.hidden = false;
+  if (els.liveBannerDetail) {
+    els.liveBannerDetail.textContent = live && live.detail ? `(${live.detail})` : "";
+  }
+}
+
+function hideLiveBanner() {
+  if (els.liveBanner) els.liveBanner.hidden = true;
+}
+
+async function checkLive({ quiet = true } = {}) {
+  try {
+    const resp = await fetch("/api/live-check");
+    if (!resp.ok) return null;
+    const live = await resp.json();
+    if (live.is_live) showLiveBanner(live);
+    else {
+      hideLiveBanner();
+      if (!quiet) alert("This session looks quiet — no other process is writing to it.");
+    }
+    return live;
+  } catch {
+    return null;
+  }
+}
+
+// --- post-save explainer -------------------------------------------------
+
+function showSavedPanel(result) {
+  if (!els.savedPanel) return;
+  const before = result.wire_bytes_before || 0;
+  const after = result.wire_bytes_after || 0;
+  const saved = Math.max(0, before - after);
+  const pct = before > 0 ? Math.round((saved / before) * 100) : 0;
+
+  if (els.savedPanelSummary) {
+    els.savedPanelSummary.textContent =
+      `${result.ops_saved} change${result.ops_saved === 1 ? "" : "s"} written. ` +
+      `Wire payload ${fmtBytes(before)} → ${fmtBytes(after)}` +
+      (saved > 0 ? ` (−${fmtBytes(saved)}, ~${pct}% smaller).` : ".");
+  }
+
+  // If the cached preflight number is far above the new wire estimate, the
+  // session may refuse to send at all until it refreshes — point at the fix.
+  if (els.savedPanelPreflight) {
+    const cached = result.cached_preflight_tokens;
+    const estTokens = Math.round(after / 4);
+    if (cached && estTokens && cached > estTokens * 1.5) {
+      els.savedPanelPreflight.innerHTML =
+        ` If Claude Code refuses to send (the cached count is ` +
+        `${cached.toLocaleString()} tokens vs ~${estTokens.toLocaleString()} now), ` +
+        `use <em>refresh preflight usage</em> in quick actions first.`;
+    } else {
+      els.savedPanelPreflight.textContent = "";
+    }
+  }
+  els.savedPanel.hidden = false;
+}
+
+function hideSavedPanel() {
+  if (els.savedPanel) els.savedPanel.hidden = true;
 }
 
 async function handleDiscard() {
@@ -1967,6 +2067,14 @@ async function initInspector() {
     els.trimToolCallsBtn.addEventListener("click", handleTrimToolCalls);
     els.refreshPreflightBtn.addEventListener("click", handleRefreshPreflight);
     els.backupsBtn.addEventListener("click", openBackupsModal);
+    if (els.liveBannerRecheck)
+      els.liveBannerRecheck.addEventListener("click", () => checkLive({ quiet: false }));
+    if (els.savedPanelClose)
+      els.savedPanelClose.addEventListener("click", hideSavedPanel);
+    // Check once on load, then poll gently. A session opened in Claude Code
+    // *after* the inspector was pointed at it is the sneaky case.
+    checkLive();
+    setInterval(checkLive, 15000);
     const backupsCloseBtn = els.backupsModal.querySelector(".modal-close");
     backupsCloseBtn.addEventListener("click", closeBackupsModal);
     els.backupsModal.addEventListener("click", (e) => {

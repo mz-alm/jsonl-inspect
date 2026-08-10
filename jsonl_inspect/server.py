@@ -28,7 +28,7 @@ _TITLE_LINE_PATTERN = re.compile(r'"type":\s*"(?:custom|ai)-title"')
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 
-from .parser import Session
+from .parser import Session, SessionLiveError
 
 DEFAULT_PORT = 5173
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -734,12 +734,35 @@ def create_app(state: InspectorState) -> Flask:
     @app.route("/api/save", methods=["POST"])
     def save() -> object:
         s = _require_session(state)
-        result = s.save()
+        body = request.get_json(silent=True) or {}
+        force = bool(body.get("force", False))
+
+        try:
+            result = s.save(force=force)
+        except SessionLiveError as e:
+            # 409 Conflict: the file is being written by someone else. The
+            # frontend turns this into an explanation, not a stack trace.
+            return jsonify({
+                "error": str(e),
+                "live": e.detail,
+                "code": "session_live",
+            }), 409
+
         return jsonify({
             "ops_saved": result["ops_saved"],
             "backup_path": result.get("backup_path"),
+            "wire_bytes_before": result.get("wire_bytes_before"),
+            "wire_bytes_after": result.get("wire_bytes_after"),
+            "cached_preflight_tokens": s.stats.latest_input_tokens,
             "stats": dataclasses.asdict(s.stats),
         })
+
+    @app.route("/api/live-check", methods=["GET"])
+    def live_check() -> object:
+        """Is this session file currently open in Claude Code? Polled by the
+        frontend to show a persistent warning banner."""
+        s = _require_session(state)
+        return jsonify(s.check_live())
 
     @app.route("/api/discard", methods=["POST"])
     def discard() -> object:
