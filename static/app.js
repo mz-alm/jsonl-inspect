@@ -164,6 +164,8 @@ const els = {
   trimToolCallsKeep: document.getElementById("trim-tool-calls-keep"),
   trimToolCallsThreshold: document.getElementById("trim-tool-calls-threshold"),
   trimToolCallsImages: document.getElementById("trim-tool-calls-images"),
+  stripImagesBtn: document.getElementById("strip-images-btn"),
+  stripImagesKeep: document.getElementById("strip-images-keep"),
   refreshPreflightBtn: document.getElementById("refresh-preflight-btn"),
   refreshPreflightTokens: document.getElementById("refresh-preflight-tokens"),
   liveBanner: document.getElementById("live-banner"),
@@ -635,6 +637,32 @@ async function handleStripThinking() {
   });
 }
 
+
+async function handleStripImages() {
+  const keepN = parseInt(els.stripImagesKeep.value, 10);
+  const keep_last_n = Number.isFinite(keepN) && keepN >= 0 ? keepN : 2;
+  await runQuickAction({
+    button: els.stripImagesBtn,
+    endpoint: "/api/quick-actions/strip-images",
+    body: { keep_last_n },
+    confirmText:
+      `Replace pasted images with a placeholder across all chain-reachable ` +
+      `records, keeping the last ${keep_last_n} image-bearing records intact?\n\n` +
+      `Text in those turns is untouched. Reversible from the pending list.`,
+    opNoun: "strip images",
+    formatSuccess: (r) => {
+      const mb = ((r.bytes_freed_est || 0) / 1024 / 1024).toFixed(2);
+      // ~194 bytes per token for base64 image data (empirical); images are
+      // byte-dense and token-cheap, so report both or the number misleads.
+      const tok = Math.round((r.bytes_freed_est || 0) / 194);
+      return (
+        `Stripped ${r.n_images} image(s) from ${r.n_mutated} record(s): ` +
+        `~${mb} MB off the wire, roughly ${tok.toLocaleString()} tokens.\n\n` +
+        `Save to commit, or undo from the pending list.`
+      );
+    },
+  });
+}
 
 async function handleRefreshPreflight() {
   const raw = els.refreshPreflightTokens.value.trim();
@@ -2123,6 +2151,9 @@ async function initInspector() {
     els.pruneBtn.addEventListener("click", handlePrune);
     els.stripThinkingBtn.addEventListener("click", handleStripThinking);
     els.trimToolCallsBtn.addEventListener("click", handleTrimToolCalls);
+    if (els.stripImagesBtn) {
+      els.stripImagesBtn.addEventListener("click", handleStripImages);
+    }
     els.refreshPreflightBtn.addEventListener("click", handleRefreshPreflight);
     els.backupsBtn.addEventListener("click", openBackupsModal);
     if (els.liveBannerRecheck)

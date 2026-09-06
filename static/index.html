@@ -146,6 +146,30 @@
             </div>
 
             <div class="quick-action">
+              <button id="strip-images-btn" class="qa-btn" type="button">
+                strip pasted images
+              </button>
+              <label class="qa-input-row">
+                <span>keep last</span>
+                <input
+                  type="number"
+                  id="strip-images-keep"
+                  value="2"
+                  min="0"
+                  step="1"
+                />
+                <span>with images</span>
+              </label>
+              <div class="qa-help">
+                Replaces images pasted into a turn with a short placeholder,
+                keeping the turn's text intact. Nothing else reaches these —
+                tool-call trimming only looks inside tool results. Byte-heavy
+                but token-cheap, so expect a big file-size drop and a smaller
+                context one. Reversible.
+              </div>
+            </div>
+
+            <div class="quick-action">
               <button id="refresh-preflight-btn" class="qa-btn" type="button">
                 refresh preflight usage
               </button>

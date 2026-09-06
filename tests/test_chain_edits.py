@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from jsonl_inspect.parser import (
+    _TRIM_IMAGE_PLACEHOLDER_BLOCK,
     MUTATIONS_FIELD,
     PLUCK_FIELD,
     TRIM_PLACEHOLDER,
@@ -892,3 +893,82 @@ def test_save_reports_wire_before_and_after(chain_with_tool_calls: Path) -> None
     result = s.save()
     assert result["wire_bytes_before"] == baseline
     assert result["wire_bytes_after"] < baseline, "trim should shrink the wire payload"
+
+
+# ---------------------------------------------------------------------------
+# strip_images: pasted images in user turns
+
+
+@pytest.fixture
+def chain_with_pasted_images(tmp_path: Path) -> Path:
+    """User turns that paste a screenshot alongside text — the shape that
+    nothing else reached (trim_tool_calls only looks inside tool blocks)."""
+    def img(n: int) -> dict:
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "Q" * n},
+        }
+
+    records = [
+        _make_record("u1", "user", None, content=[
+            {"type": "text", "text": "look at this"},
+            img(4000),
+        ]),
+        _make_record("a1", "assistant", "u1",
+                     msg_id="msg_a1",
+                     content=[{"type": "text", "text": "seen"}]),
+        _make_record("u2", "user", "a1", content=[
+            {"type": "text", "text": "and this one"},
+            img(6000),
+        ]),
+        _make_record("a2", "assistant", "u2",
+                     msg_id="msg_a2",
+                     content=[{"type": "text", "text": "also seen"}]),
+    ]
+    p = tmp_path / "with_images.jsonl"
+    write_session(p, records)
+    return p
+
+
+def test_strip_images_replaces_and_keeps_text(chain_with_pasted_images: Path) -> None:
+    s = Session.load(chain_with_pasted_images)
+    result = s.strip_images(keep_last_n=0)
+    assert result["n_mutated"] == 2
+    assert result["n_images"] == 2
+    assert result["bytes_freed_est"] > 9000  # both blobs gone
+
+    for idx in (0, 2):
+        content = s.records[idx]["message"]["content"]
+        # No image survives...
+        assert not any(b.get("type") == "image" for b in content)
+        # ...the user's own text does...
+        assert any(b.get("type") == "text" and "this" in b.get("text", "")
+                   for b in content)
+        # ...and a placeholder marks that something was attached.
+        assert any(b.get("text") == _TRIM_IMAGE_PLACEHOLDER_BLOCK["text"]
+                   for b in content)
+
+
+def test_strip_images_keeps_last_n_image_bearing(chain_with_pasted_images: Path) -> None:
+    # keep_last_n counts *image-bearing* records, not records overall —
+    # "last 1 record" would often be a turn with no image in it at all.
+    s = Session.load(chain_with_pasted_images)
+    result = s.strip_images(keep_last_n=1)
+    assert result["n_mutated"] == 1
+    assert result["preserved_indices"] == [2]
+    assert any(b.get("type") == "image"
+               for b in s.records[2]["message"]["content"])
+
+
+def test_strip_images_is_idempotent(chain_with_pasted_images: Path) -> None:
+    s = Session.load(chain_with_pasted_images)
+    s.strip_images(keep_last_n=0)
+    assert s.strip_images(keep_last_n=0)["n_mutated"] == 0
+
+
+def test_strip_images_round_trips(chain_with_pasted_images: Path) -> None:
+    s = Session.load(chain_with_pasted_images)
+    original = json.dumps(s.records[0]["message"]["content"])
+    s.strip_images(keep_last_n=0)
+    s.undo_last()
+    assert json.dumps(s.records[0]["message"]["content"]) == original

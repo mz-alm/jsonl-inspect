@@ -554,6 +554,19 @@ def create_app(state: InspectorState) -> Flask:
             return jsonify({"error": str(e)}), 400
         return _quick_action_response(s, result)
 
+    @app.route("/api/quick-actions/strip-images", methods=["POST"])
+    def quick_action_strip_images() -> object:
+        s = _require_session(state)
+        body = request.get_json(silent=True) or {}
+        keep_last_n = body.get("keep_last_n", 2)
+        if not isinstance(keep_last_n, int) or keep_last_n < 0:
+            return jsonify({"error": "'keep_last_n' must be a non-negative int"}), 400
+        try:
+            result = s.strip_images(keep_last_n=keep_last_n)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return _quick_action_response(s, result)
+
     @app.route("/api/records/<int:idx>/break-sibling-merge", methods=["POST"])
     def record_break_sibling_merge(idx: int) -> object:
         s = _require_session(state)

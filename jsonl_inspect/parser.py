@@ -1732,6 +1732,96 @@ class Session:
         result["keep_last_n"] = keep_last_n
         return result
 
+    def strip_images(self, keep_last_n: int = 2) -> dict[str, Any]:
+        """Replace pasted image blocks in chain-reachable records with a
+        short placeholder, leaving any accompanying text untouched.
+
+        This targets images sitting directly in a message's content array —
+        screenshots pasted into a turn — which nothing else reached:
+        `trim_tool_calls` only looks inside tool_use/tool_result blocks, and
+        plucking the record would take the user's text with it.
+
+        Images are byte-dense but token-cheap (~194 bytes/token vs ~4 for
+        text), so this reclaims far more file size than context. It's still
+        worth having: on a real session, 51 pasted images were 87% of the
+        wire bytes and ~71k tokens, all of it live on the chain.
+
+        A placeholder is left in place of each image rather than dropping the
+        block, so the turn still shows that something was attached — same
+        reasoning as trimming tool calls instead of removing them.
+
+        `keep_last_n` preserves the N most-recent *image-bearing* records
+        (the screenshots most likely still under discussion) rather than the
+        N most-recent records overall, which often carry no image at all.
+
+        Idempotent: records whose `message.content` is already mutated are
+        skipped, so re-runs are no-ops.
+        """
+        if keep_last_n < 0:
+            raise ValueError("keep_last_n must be >= 0")
+
+        def _has_image(content: Any) -> bool:
+            return isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "image" for b in content
+            )
+
+        reachable = _compute_chain_reachable(self.records)
+        image_indices = sorted(
+            i for i in reachable
+            if isinstance(self.records[i].get("message"), dict)
+            and _has_image(self.records[i]["message"].get("content"))
+        )
+        preserved = set(image_indices[-keep_last_n:]) if keep_last_n > 0 else set()
+
+        plan: list[tuple[int, str, Any]] = []
+        bytes_freed_est = 0
+        n_images = 0
+        for i in image_indices:
+            if i in preserved:
+                continue
+            rec = self.records[i]
+            mutations = rec.get(MUTATIONS_FIELD) or {}
+            if "message.content" in mutations:
+                continue  # idempotent
+            content = rec["message"]["content"]
+            new_content = []
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "image":
+                    new_content.append(dict(_TRIM_IMAGE_PLACEHOLDER_BLOCK))
+                    n_images += 1
+                else:
+                    new_content.append(b)
+            before_bytes = len(json.dumps(content, ensure_ascii=False))
+            after_bytes = len(json.dumps(new_content, ensure_ascii=False))
+            bytes_freed_est += before_bytes - after_bytes
+            plan.append((i, "message.content", new_content))
+
+        if not plan:
+            return {
+                "n_mutated": 0,
+                "n_images": 0,
+                "preserved_indices": sorted(preserved),
+                "bytes_freed_est": 0,
+                "reason": "strip_images_quick_action",
+                "keep_last_n": keep_last_n,
+            }
+
+        result = self._bulk_mutate(
+            plan,
+            reason="strip_images_quick_action",
+            extras={
+                "keep_last_n": keep_last_n,
+                "preserved_indices": sorted(preserved),
+                "bytes_freed_est": bytes_freed_est,
+                "n_images": n_images,
+            },
+        )
+        result["preserved_indices"] = sorted(preserved)
+        result["bytes_freed_est"] = bytes_freed_est
+        result["keep_last_n"] = keep_last_n
+        result["n_images"] = n_images
+        return result
+
     def trim_tool_calls(
         self,
         keep_last_n: int = 3,
