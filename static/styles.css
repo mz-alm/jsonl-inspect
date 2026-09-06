@@ -1288,12 +1288,12 @@ body.selection-mode #layout {
  *   .pre-compaction — positional: record sits before a compact_boundary.
  *                     Subtle background fade, no other treatment.
  *   .plucked        — state: record was explicitly unlinked via inspector.
- *                     ⊘ marker after idx, muted type tag. Applied identically
- *                     whether the record is pre- or post-compaction.
+ *                     Left gutter stripe, struck-through type tag, ⊘ after
+ *                     idx. Applied identically whether the record is pre- or
+ *                     post-compaction.
  *
- * Composition: a record with both classes gets the pre-compaction fade
- * AND the plucked marker/muting. (.plucked declared after .pre-compaction
- * so the plucked opacity wins on the post-compaction case.)
+ * Composition: a record with both classes gets the pre-compaction fade AND
+ * the plucked stripe/strikethrough, which read as independent signals.
  */
 
 .card.pre-compaction {
@@ -1312,14 +1312,31 @@ body.selection-mode #layout {
   filter: saturate(0.5);
 }
 
+/* Plucked records need to be unmistakable while scrolling a long list.
+   Muting the type tag alone isn't enough: local-metadata types (last-prompt,
+   ai-title, permission-mode, …) are *deliberately* rendered in the same grey
+   (--tag-mute and --text-mute are the same value), so an unplucked metadata
+   record looked exactly like a plucked one. Hence a left gutter stripe —
+   readable at a glance without expanding — plus a strikethrough that says
+   "removed" rather than merely "quiet". */
+/* Inset shadow rather than border-left: .card already has a 1px border, so
+   widening it would shift plucked rows 2px out of alignment with the rest of
+   a very dense list. An inset shadow paints the stripe with zero layout cost. */
+.card.plucked {
+  box-shadow: inset 3px 0 0 var(--tag-tool-result);
+}
+
 .card.plucked .type-tag {
   color: var(--text-mute);
   border-color: var(--text-mute);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
 }
 
 .card.plucked .idx::after {
   content: "⊘";
-  color: var(--text-mute);
+  color: var(--tag-tool-result);
+  font-weight: 600;
 }
 
 /* Mutated: record has _inspector_mutations (one or more fields changed via
@@ -1336,7 +1353,8 @@ body.selection-mode #layout {
 /* If both plucked and mutated, plucked takes precedence on the marker. */
 .card.plucked.mutated .idx::after {
   content: "⊘";
-  color: var(--text-mute);
+  color: var(--tag-tool-result);
+  font-weight: 600;
 }
 
 /* --- Quick actions panel ---------------------------------------------- */
@@ -1722,6 +1740,19 @@ body.selection-mode #layout {
 
 /* Hide the compact-boundary divider whenever the system type is filtered out,
    so the divider follows its associated boundary card. */
+/* Pluck-state filter: hide records already unlinked from the wire, so a
+   long manual pluck pass doesn't leave you scrolling past your own work. */
+#records.hide-plucked .card.plucked {
+  display: none;
+}
+
+/* Visually separate the pluck toggle from the per-type toggles below it. */
+.filter-toggle-pluck {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+
 #records.hide-system .compact-divider {
   display: none;
 }

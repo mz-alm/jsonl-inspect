@@ -186,6 +186,8 @@ const els = {
   composition: document.getElementById("composition-blocks"),
   filterToggles: document.getElementById("filter-toggles"),
   blockFilterToggles: document.getElementById("block-filter-toggles"),
+  hidePluckedToggle: document.getElementById("hide-plucked-toggle"),
+  pluckedCount: document.getElementById("plucked-count"),
   topRecords: document.getElementById("top-records"),
   compactionPanel: document.getElementById("compaction-panel"),
   compactionEvents: document.getElementById("compaction-events"),
@@ -193,14 +195,19 @@ const els = {
 };
 
 // Local-metadata record types — filtered out by default to surface conversation.
-const DEFAULT_HIDDEN_TYPES = new Set([
-  "file-history-snapshot",
-  "agent-name",
-  "custom-title",
-  "ai-title",
-  "last-prompt",
-  "permission-mode",
-  "queue-operation",
+// Record types shown by default. Everything else — Claude Code's local
+// bookkeeping (file-history-snapshot, agent-name, mode, bridge-session,
+// pr-link, atis-latch, …) — starts hidden.
+//
+// Deliberately an allow-list rather than a hand-maintained deny-list:
+// Claude Code keeps inventing new local-metadata record types, and under
+// the old deny-list every new one leaked into the default view because
+// nobody had added it yet.
+const ALWAYS_SHOWN_TYPES = new Set([
+  "user",
+  "assistant",
+  "attachment",
+  "system",
 ]);
 
 // --- utilities ---
@@ -584,6 +591,7 @@ async function runQuickAction({ button, endpoint, body, confirmText, opNoun, for
           card.classList.toggle("plucked", !!summary.is_plucked);
         }
       }
+      refreshPluckedCount();
     }
 
     // Support both mutation-based (n_mutated) and pluck-based (n_plucked)
@@ -1801,6 +1809,9 @@ function renderComposition() {
     `;
     els.composition.appendChild(row);
   }
+  // renderComposition() is the one call every mutating path already makes,
+  // so it doubles as the "sidebar counters are stale" hook.
+  refreshPluckedCount();
 }
 
 // --- sidebar: filter toggles ---
@@ -1809,9 +1820,16 @@ function renderFilterToggles() {
   const types = Object.entries(state.stats.type_counts)
     .sort((a, b) => b[1] - a[1]);  // by count descending
 
+  // The hide-<type> CSS rules used to be a hardcoded list, so a checkbox for
+  // any type outside it toggled a class nothing matched — the filter looked
+  // like it worked and silently did nothing. Generate the rules from the
+  // types actually present in this file instead.
+  ensureTypeFilterStyles(types.map(([t]) => t));
+  refreshPluckedCount();
+
   els.filterToggles.innerHTML = "";
   for (const [type, count] of types) {
-    const isOn = !DEFAULT_HIDDEN_TYPES.has(type);
+    const isOn = ALWAYS_SHOWN_TYPES.has(type);
     const label = document.createElement("label");
     label.className = "filter-toggle";
     label.innerHTML = `
@@ -1830,8 +1848,42 @@ function renderFilterToggles() {
   }
 }
 
+// A record type is hidden by putting `hide-<token>` on the container and
+// letting CSS do the work — O(1) per toggle, which matters on sessions with
+// 10k+ cards. Type names are tokenised because an arbitrary type string
+// isn't guaranteed to be a valid CSS class.
+function typeToken(type) {
+  return type.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function ensureTypeFilterStyles(types) {
+  let el = document.getElementById("type-filter-styles");
+  if (!el) {
+    el = document.createElement("style");
+    el.id = "type-filter-styles";
+    document.head.appendChild(el);
+  }
+  const selectors = types.map(
+    (t) =>
+      `#records.hide-${typeToken(t)} .card[data-type="${t.replace(/["\\]/g, "\\$&")}"]`
+  );
+  el.textContent = selectors.length
+    ? `${selectors.join(",\n")} { display: none; }`
+    : "";
+}
+
+function refreshPluckedCount() {
+  if (!els.pluckedCount) return;
+  const n = state.records.filter((r) => r.is_plucked).length;
+  els.pluckedCount.textContent = String(n);
+}
+
+function applyPluckedFilter(hide) {
+  els.records.classList.toggle("hide-plucked", hide);
+}
+
 function applyTypeFilter(type, show) {
-  const cls = `hide-${type}`;
+  const cls = `hide-${typeToken(type)}`;
   if (show) {
     els.records.classList.remove(cls);
   } else {
@@ -2051,6 +2103,12 @@ async function initInspector() {
     renderHealth();
 
     els.searchInput.addEventListener("input", () => applySearch(els.searchInput.value));
+
+    if (els.hidePluckedToggle) {
+      els.hidePluckedToggle.addEventListener("change", () =>
+        applyPluckedFilter(els.hidePluckedToggle.checked)
+      );
+    }
     els.saveBtn.addEventListener("click", handleSave);
     els.discardBtn.addEventListener("click", handleDiscard);
     els.undoBtn.addEventListener("click", handleUndo);
