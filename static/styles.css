@@ -1901,6 +1901,15 @@ body.selection-mode #layout {
    Shown whenever the session file appears to be open in Claude Code.
    Deliberately loud: editing a live session is the one destructive
    mistake the tool allows, and it presents as "nothing happened". */
+/* Must accompany any `display` set on an element toggled via the `hidden`
+   attribute: an author `display: flex` outranks the UA sheet's
+   `[hidden] { display: none }`, so hidden = true silently does nothing.
+   Without this the banner rendered on every page load regardless of state,
+   which read as a permanently-stuck live warning. */
+.live-banner[hidden] {
+  display: none;
+}
+
 .live-banner {
   display: flex;
   align-items: flex-start;
