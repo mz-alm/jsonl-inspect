@@ -44,6 +44,30 @@ The picker hides **agent sessions** by default. Claude Code writes a separate
 sessions by roughly 70 to 1 — one project here listed 2,440 sessions when 46
 were human-driven. A toggle in the picker brings them back.
 
+## Putting it on your PATH
+
+To drop the `cd` and `uv run` gymnastics, symlink the launcher:
+
+```bash
+ln -s ~/personal/jsonl-inspect/bin/jsonl-inspect ~/.local/bin/jsonl-inspect
+jsonl-inspect --list          # now works from any directory
+```
+
+The launcher finds the repo from its own path (through symlinks), so the link
+can live anywhere. It runs against the working tree, so a `git pull` needs no
+reinstall. If the repo has a virtualenv it uses that interpreter, so the same
+command also serves the web UI; without one, every headless action still works
+because the CLI imports no third-party packages — `cli.py`, `discovery.py` and
+`parser.py` are pure standard library, and only the Flask server is loaded (on
+demand) when you actually ask for a browser.
+
+The packaged alternative, if you'd rather have a copy independent of the
+checkout:
+
+```bash
+uv tool install --editable ~/personal/jsonl-inspect
+```
+
 ## Without a browser
 
 Opening a web UI to run a bulk operation breaks the flow of *close the session,
@@ -169,9 +193,16 @@ backups browser lists them (newest first) and restores any with one click
 
 ## Layout
 
-- `jsonl_inspect/parser.py` — JSONL loading, per-record analysis, wire-payload
-  simulation, all the edit/pluck/mutation/quick-action logic
-- `jsonl_inspect/server.py` — Flask app, console entry point, API endpoints
+Four layers, and only the last one needs a dependency:
+
+- `jsonl_inspect/parser.py` — a session once loaded: per-record analysis,
+  wire-payload simulation, all the edit/mutation/quick-action logic *(stdlib)*
+- `jsonl_inspect/discovery.py` — finding sessions on disk: project decoding,
+  title extraction, the agent/SDK filter, target resolution *(stdlib)*
+- `jsonl_inspect/cli.py` — headless front-end and the console entry point;
+  imports the server lazily *(stdlib)*
+- `jsonl_inspect/server.py` — the Flask app and API endpoints *(needs Flask)*
+- `bin/jsonl-inspect` — PATH launcher (see above)
 - `static/` — frontend (HTML/CSS/vanilla JS)
 - `static/vendor/codemirror.js` — bundled CodeMirror 6 (see `vendor-src/`)
 - `tests/` — pytest suite (chain-edit round-trips, bulk-pluck size guarantees)

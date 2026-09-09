@@ -1,0 +1,43 @@
+#!/bin/sh
+# Launcher: run jsonl-inspect from anywhere, with no `cd` and no `uv run`.
+#
+# Symlink this onto your PATH and it works from any directory:
+#
+#     ln -s ~/personal/jsonl-inspect/bin/jsonl-inspect ~/.local/bin/jsonl-inspect
+#
+# Two things make that possible. The repo is located from this script's own
+# path (resolved through symlinks), so the link can live anywhere. And the
+# headless CLI imports no third-party packages — jsonl_inspect.cli and the
+# parser beneath it are pure standard library — so plain system python3 can
+# run `--prune`, `--stats`, `--list` and friends with nothing installed.
+#
+# The web UI does need Flask, so if the repo has a virtualenv we use its
+# interpreter and the same command serves the browser too. Without one you
+# still get every headless action; asking for the server prints a clear note
+# about the missing dependency rather than a traceback.
+#
+# It runs against the working tree, so there's nothing to reinstall after a
+# `git pull`. For a copy that's independent of the checkout, use
+# `uv tool install --editable .` instead.
+
+set -e
+
+# Resolve this script through any chain of symlinks to find the repo root.
+# (`readlink -f` isn't portable to older BSD userlands, hence the loop.)
+target=$0
+while [ -L "$target" ]; do
+    link=$(readlink "$target")
+    case $link in
+        /*) target=$link ;;
+        *)  target=$(dirname "$target")/$link ;;
+    esac
+done
+REPO=$(cd "$(dirname "$target")/.." && pwd)
+
+if [ -x "$REPO/.venv/bin/python3" ]; then
+    PY="$REPO/.venv/bin/python3"
+else
+    PY=python3
+fi
+
+PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}" exec "$PY" -m jsonl_inspect.cli "$@"

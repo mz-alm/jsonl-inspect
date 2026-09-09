@@ -993,7 +993,7 @@ def _write_session(path: Path, *, entrypoint: str, prompt_source: str) -> None:
 
 
 def test_interactive_filter_separates_human_from_agent(tmp_path: Path) -> None:
-    from jsonl_inspect.server import _is_interactive_session
+    from jsonl_inspect.discovery import _is_interactive_session
 
     human = tmp_path / "human.jsonl"
     agent = tmp_path / "agent.jsonl"
@@ -1006,7 +1006,7 @@ def test_interactive_filter_separates_human_from_agent(tmp_path: Path) -> None:
 
 def test_interactive_filter_accepts_either_signal(tmp_path: Path) -> None:
     # Either field alone is sufficient — they don't always co-occur.
-    from jsonl_inspect.server import _is_interactive_session
+    from jsonl_inspect.discovery import _is_interactive_session
 
     only_entry = tmp_path / "a.jsonl"
     only_typed = tmp_path / "b.jsonl"
@@ -1018,7 +1018,7 @@ def test_interactive_filter_accepts_either_signal(tmp_path: Path) -> None:
 
 
 def test_interactive_filter_survives_garbage_lines(tmp_path: Path) -> None:
-    from jsonl_inspect.server import _is_interactive_session
+    from jsonl_inspect.discovery import _is_interactive_session
 
     p = tmp_path / "messy.jsonl"
     p.write_text(
@@ -1032,7 +1032,7 @@ def test_interactive_filter_survives_garbage_lines(tmp_path: Path) -> None:
 def test_project_key_encoding_roundtrips(tmp_path: Path) -> None:
     # Claude Code encodes a cwd by replacing every '/' with '-'; the CLI needs
     # the forward direction to find "the project I'm standing in".
-    from jsonl_inspect.server import _encode_project_key
+    from jsonl_inspect.discovery import _encode_project_key
 
     assert _encode_project_key(Path("/home/dev/work")) == "-home-dev-work"
     assert _encode_project_key(Path("/private/tmp")) == "-private-tmp"

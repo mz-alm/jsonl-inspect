@@ -7,7 +7,7 @@ name = "jsonl-inspect"
 version = "0.1.0"
 description = "Browser-based inspector and editor for Claude Code session JSONL files"
 requires-python = ">=3.11"
-authors = [{ name = "Mizael Almeida", email = "mizael.almeida@salvy.com.br" }]
+authors = [{ name = "Mizael Almeida", email = "mzalmeida.a@gmail.com" }]
 dependencies = [
     "flask>=3.0",
 ]
@@ -16,7 +16,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-jsonl-inspect = "jsonl_inspect.server:main"
+jsonl-inspect = "jsonl_inspect.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["jsonl_inspect*"]
