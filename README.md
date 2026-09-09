@@ -65,8 +65,26 @@ The packaged alternative, if you'd rather have a copy independent of the
 checkout:
 
 ```bash
-uv tool install --editable ~/personal/jsonl-inspect
+uv tool install --editable /path/to/jsonl-inspect
 ```
+
+### Or build a single file
+
+```bash
+./build.sh                  # -> dist/jsonl-inspect
+./build.sh ~/.local/bin     # build straight onto your PATH
+```
+
+That produces a **~125 KB executable** — one file, no virtualenv, no install
+step, nothing unpacked at runtime, ~60 ms cold start. It's a
+[zipapp](https://docs.python.org/3/library/zipapp.html), which is only possible
+because the headless CLI has no third-party imports.
+
+It contains the headless actions, not the web UI (that needs Flask, which would
+defeat the point). And it isn't a fully static binary — it still needs *a*
+`python3` on the machine. That trade is deliberate: embedding the interpreter
+costs 10–25 MB and a much slower start to remove a dependency that macOS and
+every mainstream Linux already ship.
 
 ## Without a browser
 
@@ -202,7 +220,7 @@ Four layers, and only the last one needs a dependency:
 - `jsonl_inspect/cli.py` — headless front-end and the console entry point;
   imports the server lazily *(stdlib)*
 - `jsonl_inspect/server.py` — the Flask app and API endpoints *(needs Flask)*
-- `bin/jsonl-inspect` — PATH launcher (see above)
+- `bin/jsonl-inspect` — PATH launcher, `build.sh` — single-file build (see above)
 - `static/` — frontend (HTML/CSS/vanilla JS)
 - `static/vendor/codemirror.js` — bundled CodeMirror 6 (see `vendor-src/`)
 - `tests/` — pytest suite (chain-edit round-trips, bulk-pluck size guarantees)
