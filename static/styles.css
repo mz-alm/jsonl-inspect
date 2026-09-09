@@ -66,6 +66,22 @@ html, body {
   border-bottom: 1px solid var(--border);
 }
 
+.picker-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.picker-toggle:hover {
+  color: var(--text);
+}
+
 .picker-subtitle {
   font-family: var(--mono);
   color: var(--text-mute);

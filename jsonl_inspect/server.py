@@ -161,6 +161,50 @@ def _extract_session_title(path: Path) -> str | None:
         return None
 
 
+def _is_interactive_session(path: Path, limit: int = 300) -> bool:
+    """True if this session was driven by a human at a terminal, rather than
+    spawned programmatically.
+
+    Claude Code writes a separate .jsonl for every programmatic invocation —
+    Task sub-agents, the memory-extraction pass, and other SDK-driven jobs —
+    so a projects dir is overwhelmingly machine traffic. Two fields separate
+    them, and either one is sufficient:
+
+    - `entrypoint`: "cli" for the interactive TUI, "sdk-cli" for SDK runs.
+    - `promptSource`: "typed" for a human keystroke, "sdk" for a generated one.
+
+    Measured over the whole local corpus (8,881 sessions, 7.5s): 123 pass this
+    check, 8,758 don't — and all 92 hand-titled sessions pass, i.e. zero false
+    negatives against the only ground truth available. `isSidechain` is *not*
+    usable here: it marks sub-agent records nested inside a parent transcript
+    and is false throughout these standalone files.
+
+    Only the first `limit` records are examined — the fields appear on the
+    earliest records of a session, and reading whole files would mean scanning
+    ~1.5 GB to answer a listing query.
+    """
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= limit:
+                    return False
+                # Cheap substring gate: most lines carry neither field, and
+                # JSON-parsing every line of every session is the slow path.
+                if '"entrypoint"' not in line and '"promptSource"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line.rstrip("\n"))
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("entrypoint") == "cli":
+                    return True
+                if rec.get("promptSource") == "typed":
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _quick_action_response(s: Session, result: dict[str, Any]) -> object:
     """Standard response shape for /api/quick-actions/* endpoints.
 
@@ -241,18 +285,33 @@ def create_app(state: InspectorState) -> Flask:
     def browse_projects() -> object:
         if not CLAUDE_PROJECTS_DIR.is_dir():
             return jsonify({"projects": [], "claude_projects_dir": str(CLAUDE_PROJECTS_DIR)})
+        # Counting *interactive* sessions rather than files is what makes this
+        # list usable: unfiltered, a project shows thousands of entries when a
+        # handful are real. The filter is ~0.13 ms/file (about 1.2s over a
+        # ~9k-session corpus), so it's affordable on a picker load; the
+        # whole-file title scan is not, and stays in the per-project view.
+        include_agents = request.args.get("include_agents") == "1"
         projects = []
         for d in CLAUDE_PROJECTS_DIR.iterdir():
             if not d.is_dir():
                 continue
-            session_count = sum(1 for p in d.iterdir() if p.is_file() and p.suffix == ".jsonl" and ".backup-" not in p.name)
-            if session_count == 0:
+            files = [
+                p for p in d.iterdir()
+                if p.is_file() and p.suffix == ".jsonl" and ".backup-" not in p.name
+            ]
+            if not files:
+                continue
+            session_count = sum(1 for p in files if _is_interactive_session(p))
+            # A project with no human-driven sessions is pure agent traffic —
+            # nothing anyone would open by hand.
+            if session_count == 0 and not include_agents:
                 continue
             stat = d.stat()
             projects.append({
                 "key": d.name,
                 "decoded_path": _decode_project_path(d.name, d),
-                "session_count": session_count,
+                "session_count": session_count if not include_agents else len(files),
+                "file_count": len(files),
                 "mtime": stat.st_mtime,
             })
         projects.sort(key=lambda x: x["mtime"], reverse=True)
@@ -267,13 +326,23 @@ def create_app(state: InspectorState) -> Flask:
         project_dir = (CLAUDE_PROJECTS_DIR / project_key).resolve()
         if not project_dir.is_dir() or project_dir.parent != CLAUDE_PROJECTS_DIR.resolve():
             abort(404)
+        # Agent/SDK sessions outnumber real ones ~70:1, so they're excluded by
+        # default and the title scan is skipped for them entirely (it's the
+        # expensive part — a full-file read each).
+        include_agents = request.args.get("include_agents") == "1"
         sessions = []
+        n_agents = 0
         for p in project_dir.iterdir():
             if not p.is_file() or p.suffix != ".jsonl":
                 continue
             # Skip backup files
             if ".backup-" in p.name:
                 continue
+            interactive = _is_interactive_session(p)
+            if not interactive:
+                n_agents += 1
+                if not include_agents:
+                    continue
             stat = p.stat()
             sessions.append({
                 "session_id": p.stem,
@@ -281,13 +350,15 @@ def create_app(state: InspectorState) -> Flask:
                 "filename": p.name,
                 "size_bytes": stat.st_size,
                 "mtime": stat.st_mtime,
-                "title": _extract_session_title(p),
+                "title": _extract_session_title(p) if interactive else None,
+                "is_interactive": interactive,
             })
         sessions.sort(key=lambda x: x["mtime"], reverse=True)
         return jsonify({
             "project_key": project_key,
             "decoded_path": _decode_project_path(project_key, project_dir),
             "sessions": sessions,
+            "agent_sessions_hidden": 0 if include_agents else n_agents,
         })
 
     # --- API: picker — load a session ---

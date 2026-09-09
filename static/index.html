@@ -11,6 +11,10 @@
       <header class="picker-topbar">
         <div class="brand">jsonl-inspect</div>
         <div class="picker-subtitle" id="picker-subtitle">browsing ~/.claude/projects/</div>
+        <label class="picker-toggle" title="Claude Code writes a .jsonl for every Task sub-agent and background job. They outnumber real sessions ~70:1 and are hidden by default.">
+          <input type="checkbox" id="show-agent-sessions" />
+          <span>show agent sessions</span>
+        </label>
       </header>
       <div class="picker-layout">
         <aside class="picker-projects" aria-label="Projects">

@@ -23,15 +23,33 @@ async function bootstrap() {
   }
 }
 
+// Agent/SDK sessions are hidden unless asked for; see _is_interactive_session
+// on the server for why (they outnumber real sessions roughly 70:1).
+function agentQuery() {
+  const box = document.getElementById("show-agent-sessions");
+  return box && box.checked ? "?include_agents=1" : "";
+}
+
 async function initPicker() {
   const projectsEl = document.getElementById("picker-projects-list");
   const sessionsEl = document.getElementById("picker-sessions-list");
   const sessionsHeading = document.getElementById("picker-sessions-heading");
   const subtitle = document.getElementById("picker-subtitle");
 
+  const agentBox = document.getElementById("show-agent-sessions");
+  if (agentBox && !agentBox.dataset.wired) {
+    agentBox.dataset.wired = "1";
+    agentBox.addEventListener("change", () => {
+      sessionsEl.innerHTML = "";
+      sessionsHeading.textContent = "sessions";
+      initPicker();
+    });
+  }
+
   let projectsData;
   try {
-    projectsData = await fetch("/api/browse").then(r => r.json());
+    projectsEl.innerHTML = `<li class="picker-empty">scanning…</li>`;
+    projectsData = await fetch(`/api/browse${agentQuery()}`).then(r => r.json());
   } catch (err) {
     projectsEl.innerHTML = `<li class="picker-empty">error: ${escapeHTML(err.message)}</li>`;
     return;
@@ -43,13 +61,18 @@ async function initPicker() {
     return;
   }
 
+  projectsEl.innerHTML = "";
   for (const p of projectsData.projects) {
     const li = document.createElement("li");
+    // file_count > session_count means agent runs are being filtered out; show
+    // both so the number isn't confusing next to Claude Code's own listing.
+    const hidden = (p.file_count || 0) - p.session_count;
+    const extra = hidden > 0 ? ` <span class="dot">·</span> <span>+${hidden} agent</span>` : "";
     li.innerHTML = `
       <div class="pl-primary">${escapeHTML(p.decoded_path)}</div>
       <div class="pl-secondary">${escapeHTML(p.key)}</div>
       <div class="pl-meta">
-        <span>${p.session_count} session${p.session_count === 1 ? "" : "s"}</span>
+        <span>${p.session_count} session${p.session_count === 1 ? "" : "s"}</span>${extra}
       </div>
     `;
     li.addEventListener("click", async () => {
@@ -59,7 +82,9 @@ async function initPicker() {
       sessionsHeading.textContent = `sessions — ${p.decoded_path}`;
       sessionsEl.innerHTML = `<li class="picker-empty">loading…</li>`;
       try {
-        const data = await fetch(`/api/browse/${encodeURIComponent(p.key)}`).then(r => r.json());
+        const data = await fetch(
+          `/api/browse/${encodeURIComponent(p.key)}${agentQuery()}`
+        ).then(r => r.json());
         renderPickerSessions(data, sessionsEl);
       } catch (err) {
         sessionsEl.innerHTML = `<li class="picker-empty">error: ${escapeHTML(err.message)}</li>`;
@@ -71,12 +96,23 @@ async function initPicker() {
 
 function renderPickerSessions(data, sessionsEl) {
   sessionsEl.innerHTML = "";
+  const nHidden = data.agent_sessions_hidden || 0;
   if (!data.sessions.length) {
-    sessionsEl.innerHTML = `<li class="picker-empty">no sessions in this project</li>`;
+    sessionsEl.innerHTML = nHidden
+      ? `<li class="picker-empty">no interactive sessions here — ${nHidden} agent run${nHidden === 1 ? "" : "s"} hidden</li>`
+      : `<li class="picker-empty">no sessions in this project</li>`;
     return;
+  }
+  if (nHidden) {
+    const note = document.createElement("li");
+    note.className = "picker-empty";
+    note.textContent = `${nHidden} agent session${nHidden === 1 ? "" : "s"} hidden`;
+    sessionsEl.appendChild(note);
   }
   for (const s of data.sessions) {
     const li = document.createElement("li");
+    // Agent sessions have no title scan (too expensive for thousands of files),
+    // so they fall back to the id.
     const title = s.title || `<no title — ${s.session_id.slice(0, 12)}…>`;
     const age = fmtAge(s.mtime * 1000);
     li.innerHTML = `
