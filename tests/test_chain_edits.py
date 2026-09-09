@@ -972,3 +972,67 @@ def test_strip_images_round_trips(chain_with_pasted_images: Path) -> None:
     s.strip_images(keep_last_n=0)
     s.undo_last()
     assert json.dumps(s.records[0]["message"]["content"]) == original
+
+
+# ---------------------------------------------------------------------------
+# session discovery: the agent/SDK filter behind the picker and the CLI
+
+
+def _write_session(path: Path, *, entrypoint: str, prompt_source: str) -> None:
+    """Minimal session shaped like Claude Code's, with the two fields that
+    distinguish a human-driven session from a spawned one."""
+    records = [
+        {"type": "system", "uuid": "s1", "parentUuid": None,
+         "timestamp": "2026-01-01T00:00:00Z", "entrypoint": entrypoint,
+         "subtype": "boot"},
+        {"type": "user", "uuid": "u1", "parentUuid": None,
+         "timestamp": "2026-01-01T00:00:01Z", "promptSource": prompt_source,
+         "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}},
+    ]
+    write_session(path, records)
+
+
+def test_interactive_filter_separates_human_from_agent(tmp_path: Path) -> None:
+    from jsonl_inspect.server import _is_interactive_session
+
+    human = tmp_path / "human.jsonl"
+    agent = tmp_path / "agent.jsonl"
+    _write_session(human, entrypoint="cli", prompt_source="typed")
+    _write_session(agent, entrypoint="sdk-cli", prompt_source="sdk")
+
+    assert _is_interactive_session(human) is True
+    assert _is_interactive_session(agent) is False
+
+
+def test_interactive_filter_accepts_either_signal(tmp_path: Path) -> None:
+    # Either field alone is sufficient — they don't always co-occur.
+    from jsonl_inspect.server import _is_interactive_session
+
+    only_entry = tmp_path / "a.jsonl"
+    only_typed = tmp_path / "b.jsonl"
+    _write_session(only_entry, entrypoint="cli", prompt_source="sdk")
+    _write_session(only_typed, entrypoint="sdk-cli", prompt_source="typed")
+
+    assert _is_interactive_session(only_entry) is True
+    assert _is_interactive_session(only_typed) is True
+
+
+def test_interactive_filter_survives_garbage_lines(tmp_path: Path) -> None:
+    from jsonl_inspect.server import _is_interactive_session
+
+    p = tmp_path / "messy.jsonl"
+    p.write_text(
+        'not json at all\n'
+        '{"type":"system","entrypoint":"cli"}\n',
+        encoding="utf-8",
+    )
+    assert _is_interactive_session(p) is True
+
+
+def test_project_key_encoding_roundtrips(tmp_path: Path) -> None:
+    # Claude Code encodes a cwd by replacing every '/' with '-'; the CLI needs
+    # the forward direction to find "the project I'm standing in".
+    from jsonl_inspect.server import _encode_project_key
+
+    assert _encode_project_key(Path("/home/dev/work")) == "-home-dev-work"
+    assert _encode_project_key(Path("/private/tmp")) == "-private-tmp"

@@ -36,7 +36,38 @@ sessions inside each, with titles, sizes, and ages. Pick one and it loads.
 
 > **Never run it against a session that's currently open in Claude Code.** The
 > live process writes to the file; a concurrent write from here will corrupt
-> it. Close the session first.
+> it. Close the session first. (Both the UI and the CLI detect this and refuse
+> to save, but don't rely on it.)
+
+The picker hides **agent sessions** by default. Claude Code writes a separate
+`.jsonl` for every Task sub-agent and background job, and they outnumber real
+sessions by roughly 70 to 1 — one project here listed 2,440 sessions when 46
+were human-driven. A toggle in the picker brings them back.
+
+## Without a browser
+
+Opening a web UI to run a bulk operation breaks the flow of *close the session,
+clean it, get back in*. The same actions are available headlessly:
+
+```bash
+jsonl-inspect --prune                  # the session you just closed, in this directory
+jsonl-inspect --prune --dry-run        # show what would change, write nothing
+jsonl-inspect --prune my-session       # by session title, searched across all projects
+jsonl-inspect --stats my-session       # composition + wire size, changes nothing
+jsonl-inspect --list                   # every interactive session, all projects
+jsonl-inspect --strip-thinking --strip-images path/to/session.jsonl
+jsonl-inspect --prune --json           # machine-readable
+```
+
+With an action and no target, it picks the newest interactive session in the
+current directory's project — which is what you just closed. Paths and titles
+both work as targets; an ambiguous title lists the candidates and stops rather
+than guessing, since these actions write.
+
+Tuning: `--keep-thinking N`, `--keep-tools N`, `--keep-images N`,
+`--threshold BYTES`, `--trim-images`. Safety: writes are refused if the session
+looks open (`--force` overrides), `--dry-run` is always allowed, and every save
+takes a timestamped backup and prints its path.
 
 ## The mental model (why editing the file changes anything)
 

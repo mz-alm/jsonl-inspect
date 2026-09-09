@@ -886,6 +886,277 @@ def _open_browser_when_ready(url: str, delay: float = 0.6) -> None:
     threading.Thread(target=opener, daemon=True).start()
 
 
+# --- Headless CLI ---------------------------------------------------------
+#
+# The web UI is the right tool for *inspecting* — scanning cards, picking
+# records by hand. The quick actions aren't: they're deterministic bulk
+# operations with a couple of parameters, and opening a browser to run one
+# breaks the flow of "close the session, clean it, get back in". This layer
+# exposes them directly. It adds no new logic — it calls the same Session
+# methods the endpoints do.
+
+
+def _encode_project_key(path: Path) -> str:
+    """Claude Code's project-dir encoding: every '/' becomes '-'."""
+    return str(path).replace("/", "-")
+
+
+def _interactive_sessions_in(project_dir: Path) -> list[Path]:
+    """Human-driven sessions in one project dir, newest first."""
+    if not project_dir.is_dir():
+        return []
+    files = [
+        p for p in project_dir.iterdir()
+        if p.is_file() and p.suffix == ".jsonl" and ".backup-" not in p.name
+        and _is_interactive_session(p)
+    ]
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _all_interactive_sessions() -> list[tuple[Path, Path]]:
+    """(session_path, project_dir) for every interactive session, newest first."""
+    if not CLAUDE_PROJECTS_DIR.is_dir():
+        return []
+    out: list[tuple[Path, Path]] = []
+    for d in CLAUDE_PROJECTS_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        for p in _interactive_sessions_in(d):
+            out.append((p, d))
+    return sorted(out, key=lambda t: t[0].stat().st_mtime, reverse=True)
+
+
+def _resolve_target(target: str | None) -> Path:
+    """Turn a CLI target into a session path.
+
+    Three forms, in order of directness:
+      - an existing path       → used as-is
+      - omitted                → newest interactive session in the cwd's
+                                 project, i.e. "the one I just closed"
+      - anything else          → matched against session titles across all
+                                 projects
+
+    Raises SystemExit with a useful message rather than guessing: these
+    actions write to the file, so an ambiguous name must stop and ask.
+    """
+    if target:
+        p = Path(target).expanduser()
+        if p.is_file():
+            return p
+
+    if not target:
+        project = CLAUDE_PROJECTS_DIR / _encode_project_key(Path.cwd())
+        found = _interactive_sessions_in(project)
+        if not found:
+            raise SystemExit(
+                f"No interactive session found for {Path.cwd()}\n"
+                f"  (looked in {project})\n"
+                f"  Pass a path or a session name, or use --list to see what's available."
+            )
+        return found[0]
+
+    # Name lookup. Exact (case-insensitive) beats substring, so a session
+    # called "friend" is reachable even though three other titles contain it.
+    needle = target.lower()
+    exact: list[tuple[Path, Path, str]] = []
+    partial: list[tuple[Path, Path, str]] = []
+    for p, d in _all_interactive_sessions():
+        title = _extract_session_title(p)
+        if not title:
+            continue
+        t = title.lower()
+        if t == needle:
+            exact.append((p, d, title))
+        elif needle in t:
+            partial.append((p, d, title))
+
+    matches = exact or partial
+    if not matches:
+        raise SystemExit(
+            f"No session titled like {target!r}. Try --list."
+        )
+    if len(matches) > 1:
+        # Show the project and age, not just the id: a session that has been
+        # moved between directories leaves a stale copy behind under the same
+        # id, so the id alone can't tell two matches apart.
+        lines = "\n".join(
+            f"  {t[:36]:<38} {p.stat().st_size / 1024 / 1024:>7.1f} MB  "
+            f"{_fmt_age(p.stat().st_mtime):>10}  {_decode_project_path(d.name, d)}"
+            for p, d, t in matches
+        )
+        raise SystemExit(
+            f"{target!r} matches {len(matches)} sessions — pass a full path to pick one:\n"
+            f"{lines}"
+        )
+    return matches[0][0]
+
+
+def _cli_list() -> int:
+    """Print every interactive session across all projects."""
+    rows = _all_interactive_sessions()
+    if not rows:
+        print("No interactive sessions found.", file=sys.stderr)
+        return 1
+    print(f"{'title':<44} {'size':>9}  {'age':>10}  project")
+    print("-" * 96)
+    for p, d in rows:
+        title = _extract_session_title(p) or f"<{p.stem[:8]}>"
+        size = p.stat().st_size / 1024 / 1024
+        age = _fmt_age(p.stat().st_mtime)
+        print(f"{title[:44]:<44} {size:>7.1f} MB  {age:>10}  {_decode_project_path(d.name, d)}")
+    print(f"\n{len(rows)} interactive session(s).")
+    return 0
+
+
+def _fmt_age(mtime: float) -> str:
+    secs = max(0.0, time.time() - mtime)
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= n:
+            return f"{int(secs // n)}{unit} ago"
+    return "just now"
+
+
+def _fmt_bytes(n: float) -> str:
+    if n < 1024:
+        return f"{n:.0f}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}KB"
+    return f"{n / 1024 / 1024:.2f}MB"
+
+
+def _cli_run(args: argparse.Namespace) -> int:
+    """Run the requested actions headlessly against one session."""
+    path = _resolve_target(args.file)
+    session = Session.load(path)
+    title = _extract_session_title(path) or "<untitled>"
+
+    if not args.json:
+        print(f"session : {title}  ({path.name[:8]})")
+        print(f"path    : {path}")
+        print(f"size    : {_fmt_bytes(session.stats.total_bytes)} on disk, "
+              f"{_fmt_bytes(session.stats.wire_messages_bytes)} on the wire "
+              f"({session.stats.wire_messages_count} messages)")
+
+    if args.stats:
+        return _cli_stats(session, args)
+
+    # The one genuinely destructive mistake: writing a file Claude Code is
+    # holding. In practice the CLI flow makes this rare (you closed the
+    # session to get here), but rare isn't never.
+    # A dry run writes nothing, so it stays available even on a live session —
+    # that's precisely when you want to look before closing anything.
+    live = {} if args.dry_run else session.check_live()
+    if live.get("is_live") and not args.force:
+        print(
+            f"\nRefusing to write: this session looks open in Claude Code "
+            f"({live.get('detail', 'detected')}).\n"
+            f"Close it there and re-run, or pass --force.",
+            file=sys.stderr,
+        )
+        return 2
+
+    wire_before = session.stats.wire_messages_bytes
+    results: list[tuple[str, dict[str, Any]]] = []
+
+    if args.prune or args.strip_thinking:
+        keep = args.keep_thinking if args.prune else args.keep_last
+        results.append(("strip-thinking", session.strip_thinking_blocks(keep_last_n=keep)))
+    if args.prune or args.trim_tools:
+        results.append((
+            "trim-tools",
+            session.trim_tool_calls(
+                keep_last_n=args.keep_tools,
+                threshold_bytes=args.threshold,
+                trim_images=args.trim_images,
+            ),
+        ))
+    if args.strip_images:
+        results.append(("strip-images", session.strip_images(keep_last_n=args.keep_images)))
+    if args.refresh_preflight:
+        results.append(("refresh-preflight", session.refresh_preflight_usage()))
+
+    if not results:
+        print("\nNothing to do — pass an action (--prune, --stats, …) or --help.",
+              file=sys.stderr)
+        return 1
+
+    wire_after = session.stats.wire_messages_bytes
+    freed = max(0, wire_before - wire_after)
+    payload: dict[str, Any] = {
+        "session": {"title": title, "path": str(path), "id": path.stem},
+        "dry_run": bool(args.dry_run),
+        "actions": {name: res for name, res in results},
+        "wire_bytes_before": wire_before,
+        "wire_bytes_after": wire_after,
+        "wire_bytes_freed": freed,
+    }
+
+    if args.dry_run:
+        session.discard_all()
+        payload["saved"] = False
+    else:
+        save_res = session.save()
+        payload["saved"] = True
+        payload["backup"] = save_res.get("backup_path")
+
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    print()
+    for name, res in results:
+        bits = []
+        for key, label in (
+            ("n_mutated", "records"), ("n_plucked", "plucked"),
+            ("n_images", "images"), ("n_trimmed", "trimmed"),
+        ):
+            if res.get(key):
+                bits.append(f"{res[key]} {label}")
+        detail = ", ".join(bits) or "nothing to do"
+        print(f"  {name:<18} {detail}")
+
+    pct = (100 * freed / wire_before) if wire_before else 0
+    print(f"\nwire {_fmt_bytes(wire_before)} → {_fmt_bytes(wire_after)} "
+          f"(−{_fmt_bytes(freed)}, {pct:.0f}% smaller)")
+
+    if args.dry_run:
+        print("\nDRY RUN — nothing written. Re-run without --dry-run to apply.")
+    elif not payload.get("backup"):
+        # save() short-circuits when every action was a no-op (already pruned).
+        print("\nnothing to save — this session was already clean.")
+        return 0
+    else:
+        print(f"saved · backup: {payload.get('backup')}")
+        # Same caveat the web UI's post-save panel gives: the statusline reads
+        # a cached number and won't move until the next request.
+        print("\nClaude Code's context % won't drop until you send one message "
+              "in the session.")
+    return 0
+
+
+def _cli_stats(session: Session, args: argparse.Namespace) -> int:
+    st = session.stats
+    if args.json:
+        print(json.dumps(dataclasses.asdict(st), indent=2, default=str))
+        return 0
+    print(f"records : {st.wire_messages_count} on the wire / {st.total_records} total")
+    print(f"preflight: {st.latest_input_tokens:,} tokens (cached from the last response)"
+          if st.latest_input_tokens else "preflight: unknown")
+    print("\ncomposition (block types, by wire-relevant bytes):")
+    total = sum(st.bytes_by_block_type.values()) or 1
+    for btype, b in sorted(st.bytes_by_block_type.items(), key=lambda kv: -kv[1]):
+        print(f"  {btype:<14} {_fmt_bytes(b):>10}  {100 * b / total:>5.1f}%")
+    print("\nlargest records:")
+    # top_records_by_size is [(index, size)]; the readable detail lives on the
+    # corresponding summary.
+    for idx, size in st.top_records_by_size[:8]:
+        summ = session.summaries[idx] if 0 <= idx < len(session.summaries) else None
+        rtype = summ.type if summ else "?"
+        preview = ((summ.preview or "") if summ else "").replace("\n", " ")
+        print(f"  idx {idx:<7} {_fmt_bytes(size):>10}  {rtype:<11} {preview[:44]}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jsonl-inspect",
@@ -895,8 +1166,51 @@ def main(argv: list[str] | None = None) -> int:
         "file",
         nargs="?",
         default=None,
-        help="Path to the JSONL file to inspect. If omitted, the picker is shown.",
+        help=(
+            "Session to act on: a path, or a session title (matched across all "
+            "projects). With a CLI action and no target, the newest interactive "
+            "session in the current directory's project is used. With no action, "
+            "a path opens the inspector and omitting it shows the picker."
+        ),
     )
+
+    # Headless actions. Flags rather than subcommands so the existing
+    # `jsonl-inspect [path]` usage keeps working and actions compose.
+    cli = parser.add_argument_group("headless actions (no browser)")
+    cli.add_argument("--prune", action="store_true",
+                     help="strip thinking + trim tool content (the usual pair)")
+    cli.add_argument("--strip-thinking", action="store_true",
+                     help="remove thinking blocks from chain-reachable assistants")
+    cli.add_argument("--trim-tools", action="store_true",
+                     help="replace bulky tool_use inputs / tool_result content")
+    cli.add_argument("--strip-images", action="store_true",
+                     help="remove images pasted into a turn")
+    cli.add_argument("--refresh-preflight", action="store_true",
+                     help="reset usage.input_tokens on the latest in-chain assistant")
+    cli.add_argument("--stats", action="store_true",
+                     help="print composition and wire size, change nothing")
+    cli.add_argument("--list", action="store_true", dest="list_sessions",
+                     help="list interactive sessions across all projects")
+
+    opts = parser.add_argument_group("headless options")
+    opts.add_argument("--dry-run", action="store_true",
+                      help="show what would change, write nothing")
+    opts.add_argument("--json", action="store_true",
+                      help="machine-readable output")
+    opts.add_argument("--force", action="store_true",
+                      help="write even if the session looks open in Claude Code")
+    opts.add_argument("--keep-thinking", type=int, default=1, metavar="N",
+                      help="thinking-bearing turns to leave intact (default: 1)")
+    opts.add_argument("--keep-tools", type=int, default=3, metavar="N",
+                      help="tool exchanges to leave intact (default: 3)")
+    opts.add_argument("--keep-images", type=int, default=2, metavar="N",
+                      help="image-bearing turns to leave intact (default: 2)")
+    opts.add_argument("--keep-last", type=int, default=1, metavar="N",
+                      help="keep-last for a lone --strip-thinking (default: 1)")
+    opts.add_argument("--threshold", type=int, default=500, metavar="BYTES",
+                      help="trim tool strings longer than this (default: 500)")
+    opts.add_argument("--trim-images", action="store_true",
+                      help="also trim images nested inside tool results")
     parser.add_argument(
         "--port",
         type=int,
@@ -914,6 +1228,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Run Flask in debug mode (auto-reload)",
     )
     args = parser.parse_args(argv)
+
+    # Headless paths return before any Flask machinery starts.
+    if args.list_sessions:
+        return _cli_list()
+    if any((args.prune, args.strip_thinking, args.trim_tools, args.strip_images,
+            args.refresh_preflight, args.stats)):
+        try:
+            return _cli_run(args)
+        except SystemExit as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        except (FileNotFoundError, ValueError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
 
     state = InspectorState()
 
