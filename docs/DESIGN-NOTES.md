@@ -111,6 +111,74 @@ Two caveats learned the hard way:
   row"). Elision that leaves stubs can be more conspicuous than elision that
   leaves nothing. There's no free lunch; pick which seam you prefer.
 
+## Most sessions on disk aren't yours
+
+Claude Code writes a separate `.jsonl` for every *programmatic* invocation, not
+just for conversations you have: Task sub-agents, the memory-extraction pass,
+and other SDK-driven jobs each get their own file in the same projects
+directory. They dominate by a wide margin. Measured over one local corpus of
+8,881 session files, **123 were human-driven and 8,758 were not** — roughly 70
+to 1. A project that appears to hold 2,440 sessions can hold 46 real ones.
+
+Any tool that lists sessions has to separate them, or it's unusable.
+
+### Two fields tell them apart
+
+Either of these is sufficient:
+
+| field | human-driven | spawned |
+|---|---|---|
+| `entrypoint` | `"cli"` | `"sdk-cli"` |
+| `promptSource` | `"typed"` | `"sdk"` |
+
+They don't always co-occur, so the check is an OR rather than an AND.
+
+Validation, against the only ground truth available: **every hand-titled
+session passes.** A title is set deliberately by a person, so a titled session
+is definitionally one someone cared about — and there were **zero false
+negatives** across the corpus. The 8,758 rejected files are, on inspection,
+exactly what you'd expect: agent tasks and generated prompts like *"From the
+tool outputs below, extract durable facts…"*.
+
+**What does not work: `isSidechain`.** It's the obvious first guess and it's
+wrong. That flag marks sub-agent records *nested inside a parent transcript*;
+in these standalone agent files it is `false` throughout, so it separates
+nothing. Worth recording as a negative result — it cost a round of theorising
+before the data settled it.
+
+### Order matters more than the check does
+
+The discriminating fields appear on the earliest records of a session — median
+line **4**, worst case observed line **154** — so an early exit a few hundred
+records in is enough, and the check costs about **0.13 ms per file** (~1.2s over
+that whole corpus).
+
+Extracting a session's *title*, by contrast, means reading the whole file. That
+is the expensive operation, and the useful consequence is a cheap rule:
+**filter first, then title only the survivors.** Getting that order backwards
+turns a listing into a multi-second whole-corpus read.
+
+### `cwd` is per-record, not per-session
+
+A related trap when identifying sessions. Records carry a `cwd`, and it's
+tempting to treat it as "where this session lives." It isn't — it records where
+the process happened to be *at that moment*. A session started in one directory
+that later moves elsewhere will carry records claiming the second directory,
+while the file itself still sits in the first project's folder.
+
+So `cwd` is a *last-resort* fallback for identifying a project, never a primary
+source. The reliable direction is the other way round: the containing folder
+name is the encoded path, and it can be decoded by walking the filesystem.
+
+### Caveat
+
+This is a heuristic over two fields that aren't documented anywhere. It matches
+observed behaviour and validates cleanly, but a Claude Code change could alter
+or retire either field — at which point real sessions would start being hidden.
+That's precisely why the picker keeps a **"show agent sessions"** toggle and the
+filter is never the only way to reach a file: if the numbers ever look wrong,
+turn it off and everything is visible again.
+
 ## The context gauge lies (sometimes)
 
 Claude Code's context-usage indicator reads a **cached** `usage.input_tokens`
