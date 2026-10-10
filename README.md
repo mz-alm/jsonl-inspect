@@ -94,6 +94,7 @@ clean it, get back in*. The same actions are available headlessly:
 ```bash
 jsonl-inspect --prune                  # the session you just closed, in this directory
 jsonl-inspect --prune --dry-run        # show what would change, write nothing
+jsonl-inspect --prune 201b483d         # by session id (any unambiguous prefix)
 jsonl-inspect --prune my-session       # by session title, searched across all projects
 jsonl-inspect --stats my-session       # composition + wire size, changes nothing
 jsonl-inspect --list                   # every interactive session, all projects
@@ -102,9 +103,11 @@ jsonl-inspect --prune --json           # machine-readable
 ```
 
 With an action and no target, it picks the newest interactive session in the
-current directory's project — which is what you just closed. Paths and titles
-both work as targets; an ambiguous title lists the candidates and stops rather
-than guessing, since these actions write.
+current directory's project — which is what you just closed. Otherwise a target
+can be a path, a **session id**, or a title. `--list` shows the id of every
+session; like a git short sha, any unambiguous prefix works, so `201b` is
+usually enough. An ambiguous target lists the candidates and stops rather than
+guessing, since these actions write.
 
 Tuning: `--keep-thinking N`, `--keep-tools N`, `--keep-images N`,
 `--threshold BYTES`, `--trim-images`. Safety: writes are refused if the session

@@ -176,6 +176,32 @@ def _encode_project_key(path: Path) -> str:
     return str(path).replace("/", "-")
 
 
+# A session id is a UUID; its first group is 8 hex characters. That group is
+# short enough to type, long enough to be unique in practice (five characters
+# already separate every session in a ~130-session corpus), and it's the slice
+# Claude Code itself shows, so the two agree.
+SHORT_ID_LEN = 8
+MIN_ID_PREFIX = 4
+
+
+def _short_id(path: Path) -> str:
+    """The handle for a session: the first group of its uuid filename."""
+    return path.stem[:SHORT_ID_LEN]
+
+
+def _looks_like_id(s: str) -> bool:
+    """Could this target be a uuid prefix rather than a title?
+
+    Deliberately narrow — hex digits and dashes only, four or more. A title
+    made purely of hex ("beef", "add") would be tried as an id first and then
+    fall through to the title search, so the guess costs nothing.
+    """
+    return (
+        len(s) >= MIN_ID_PREFIX
+        and all(c in "0123456789abcdef-" for c in s.lower())
+    )
+
+
 def _interactive_sessions_in(project_dir: Path) -> list[Path]:
     """Human-driven sessions in one project dir, newest first."""
     if not project_dir.is_dir():
@@ -201,18 +227,35 @@ def _all_interactive_sessions() -> list[tuple[Path, Path]]:
     return sorted(out, key=lambda t: t[0].stat().st_mtime, reverse=True)
 
 
+def _candidate_lines(matches: list[tuple[Path, Path, str]]) -> str:
+    """Render ambiguous matches: id, label, size, age, project.
+
+    The project is always shown because a session moved between directories
+    leaves a stale copy behind under the *same* uuid — in that case even the
+    full id can't separate them and only a path will do.
+    """
+    return "\n".join(
+        f"  {_short_id(p)}  {label[:32]:<34} "
+        f"{p.stat().st_size / 1024 / 1024:>7.1f} MB  "
+        f"{_fmt_age(p.stat().st_mtime):>10}  {_decode_project_path(d.name, d)}"
+        for p, d, label in matches
+    )
+
+
 def _resolve_target(target: str | None) -> Path:
     """Turn a CLI target into a session path.
 
-    Three forms, in order of directness:
+    Four forms, in order of directness:
       - an existing path       → used as-is
       - omitted                → newest interactive session in the cwd's
                                  project, i.e. "the one I just closed"
+      - a uuid prefix          → matched against session ids (any unambiguous
+                                 prefix of 4+ characters, like a git sha)
       - anything else          → matched against session titles across all
                                  projects
 
     Raises SystemExit with a useful message rather than guessing: these
-    actions write to the file, so an ambiguous name must stop and ask.
+    actions write to the file, so an ambiguous target must stop and ask.
     """
     if target:
         p = Path(target).expanduser()
@@ -230,12 +273,40 @@ def _resolve_target(target: str | None) -> Path:
             )
         return found[0]
 
+    sessions = _all_interactive_sessions()
+
+    # Id lookup first — it's the unambiguous handle, and it's cheap (no file
+    # reads at all, where the title search opens every session). A prefix that
+    # matches nothing falls through to the title search below.
+    if _looks_like_id(target):
+        needle_id = target.lower()
+        found = [(p, d) for p, d in sessions
+                 if p.stem.lower().startswith(needle_id)]
+        if len(found) == 1:
+            return found[0][0]
+        if len(found) > 1:
+            # Titles cost a full-file read each, so they're only resolved for
+            # the handful of candidates — and only once the answer is unclear.
+            hits = [(p, d, _extract_session_title(p) or "<untitled>")
+                    for p, d in found]
+            same_uuid = len({p.stem for p, _, _ in hits}) == 1
+            hint = (
+                "these are the same session id in two project directories — "
+                "pass a path to pick one"
+                if same_uuid else
+                "use more characters, or pass a path"
+            )
+            raise SystemExit(
+                f"{target!r} matches {len(hits)} sessions — {hint}:\n"
+                f"{_candidate_lines(hits)}"
+            )
+
     # Name lookup. Exact (case-insensitive) beats substring, so a session
     # called "friend" is reachable even though three other titles contain it.
     needle = target.lower()
     exact: list[tuple[Path, Path, str]] = []
     partial: list[tuple[Path, Path, str]] = []
-    for p, d in _all_interactive_sessions():
+    for p, d in sessions:
         title = _extract_session_title(p)
         if not title:
             continue
@@ -251,17 +322,15 @@ def _resolve_target(target: str | None) -> Path:
             f"No session titled like {target!r}. Try --list."
         )
     if len(matches) > 1:
-        # Show the project and age, not just the id: a session that has been
-        # moved between directories leaves a stale copy behind under the same
-        # id, so the id alone can't tell two matches apart.
-        lines = "\n".join(
-            f"  {t[:36]:<38} {p.stat().st_size / 1024 / 1024:>7.1f} MB  "
-            f"{_fmt_age(p.stat().st_mtime):>10}  {_decode_project_path(d.name, d)}"
-            for p, d, t in matches
+        same_uuid = len({p.stem for p, _, _ in matches}) == 1
+        hint = (
+            "same session id in two project directories — pass a path to pick one"
+            if same_uuid else
+            "pass one of the ids on the left instead"
         )
         raise SystemExit(
-            f"{target!r} matches {len(matches)} sessions — pass a full path to pick one:\n"
-            f"{lines}"
+            f"{target!r} matches {len(matches)} sessions — {hint}:\n"
+            f"{_candidate_lines(matches)}"
         )
     return matches[0][0]
 

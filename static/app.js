@@ -113,11 +113,17 @@ function renderPickerSessions(data, sessionsEl) {
     const li = document.createElement("li");
     // Agent sessions have no title scan (too expensive for thousands of files),
     // so they fall back to the id.
-    const title = s.title || `<no title — ${s.session_id.slice(0, 12)}…>`;
+    const title = s.title || "<no title>";
     const age = fmtAge(s.mtime * 1000);
+    // The first uuid group is the handle the CLI accepts, so it's shown
+    // bright and the rest of the id dimmed — the id is still there to copy,
+    // but the part worth typing stands out.
+    const shortId = s.session_id.slice(0, 8);
+    const restId = s.session_id.slice(8);
     li.innerHTML = `
       <div class="pl-primary">${escapeHTML(title)}</div>
-      <div class="pl-secondary">${escapeHTML(s.session_id)}</div>
+      <div class="pl-secondary" title="jsonl-inspect --prune ${escapeHTML(shortId)}"
+        ><b class="pl-id">${escapeHTML(shortId)}</b>${escapeHTML(restId)}</div>
       <div class="pl-meta">
         <span>${fmtBytes(s.size_bytes)}</span>
         <span class="dot">·</span>

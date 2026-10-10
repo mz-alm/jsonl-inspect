@@ -26,6 +26,7 @@ from .discovery import (
     _encode_project_key,
     _extract_session_title,
     _fmt_age,
+    _short_id,
     _fmt_bytes,
     _interactive_sessions_in,
     _is_interactive_session,
@@ -42,14 +43,16 @@ def _cli_list() -> int:
     if not rows:
         print("No interactive sessions found.", file=sys.stderr)
         return 1
-    print(f"{'title':<44} {'size':>9}  {'age':>10}  project")
-    print("-" * 96)
+    print(f"{'id':<10} {'title':<40} {'size':>9}  {'age':>10}  project")
+    print("-" * 104)
     for p, d in rows:
-        title = _extract_session_title(p) or f"<{p.stem[:8]}>"
+        title = _extract_session_title(p) or "<untitled>"
         size = p.stat().st_size / 1024 / 1024
         age = _fmt_age(p.stat().st_mtime)
-        print(f"{title[:44]:<44} {size:>7.1f} MB  {age:>10}  {_decode_project_path(d.name, d)}")
-    print(f"\n{len(rows)} interactive session(s).")
+        print(f"{_short_id(p):<10} {title[:40]:<40} {size:>7.1f} MB  "
+              f"{age:>10}  {_decode_project_path(d.name, d)}")
+    print(f"\n{len(rows)} interactive session(s). "
+          f"Pass an id or a title to any action.")
     return 0
 
 
@@ -61,7 +64,7 @@ def _cli_run(args: argparse.Namespace) -> int:
     title = _extract_session_title(path) or "<untitled>"
 
     if not args.json:
-        print(f"session : {title}  ({path.name[:8]})")
+        print(f"session : {title}  ({_short_id(path)})")
         print(f"path    : {path}")
         print(f"size    : {_fmt_bytes(session.stats.total_bytes)} on disk, "
               f"{_fmt_bytes(session.stats.wire_messages_bytes)} on the wire "
@@ -113,7 +116,8 @@ def _cli_run(args: argparse.Namespace) -> int:
     wire_after = session.stats.wire_messages_bytes
     freed = max(0, wire_before - wire_after)
     payload: dict[str, Any] = {
-        "session": {"title": title, "path": str(path), "id": path.stem},
+        "session": {"title": title, "path": str(path),
+                    "id": path.stem, "short_id": _short_id(path)},
         "dry_run": bool(args.dry_run),
         "actions": {name: res for name, res in results},
         "wire_bytes_before": wire_before,
@@ -197,10 +201,12 @@ def main(argv: list[str] | None = None) -> int:
         nargs="?",
         default=None,
         help=(
-            "Session to act on: a path, or a session title (matched across all "
-            "projects). With a CLI action and no target, the newest interactive "
-            "session in the current directory's project is used. With no action, "
-            "a path opens the inspector and omitting it shows the picker."
+            "Session to act on: a path, a session id (any unambiguous prefix, "
+            "as shown by --list), or a session title — ids and titles are "
+            "matched across all projects. With a CLI action and no target, the "
+            "newest interactive session in the current directory's project is "
+            "used. With no action, a path opens the inspector and omitting it "
+            "shows the picker."
         ),
     )
 

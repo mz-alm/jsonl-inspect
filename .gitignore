@@ -30,3 +30,6 @@ scratch/
 # Vendor bundling artifacts (the bundle itself in static/vendor/ IS committed)
 vendor-src/node_modules/
 vendor-src/package-lock.json
+
+# Local secrets — never commit
+.env

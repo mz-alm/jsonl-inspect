@@ -2036,3 +2036,10 @@ body.selection-mode #layout {
 }
 
 .saved-panel-next strong { color: var(--text-main, #e5e7eb); }
+
+/* The session-id prefix the CLI accepts as a handle: bright against the
+   dimmed remainder, so the part worth typing is the part you notice. */
+.picker-list .pl-id {
+  color: var(--text);
+  font-weight: 600;
+}

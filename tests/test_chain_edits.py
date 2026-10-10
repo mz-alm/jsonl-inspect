@@ -1036,3 +1036,77 @@ def test_project_key_encoding_roundtrips(tmp_path: Path) -> None:
 
     assert _encode_project_key(Path("/home/dev/work")) == "-home-dev-work"
     assert _encode_project_key(Path("/private/tmp")) == "-private-tmp"
+
+
+# ---------------------------------------------------------------------------
+# session ids as CLI handles
+
+
+def test_short_id_is_the_first_uuid_group() -> None:
+    # The handle shown by --list and accepted by every action. Eight hex
+    # characters is the uuid's own first group, which is also the slice
+    # Claude Code shows, so the two agree.
+    from jsonl_inspect.discovery import _short_id
+
+    p = Path("/x/-proj/201b483d-70e6-44cd-a268-0cf9e1b64337.jsonl")
+    assert _short_id(p) == "201b483d"
+
+
+def test_looks_like_id_separates_ids_from_titles() -> None:
+    # Narrow on purpose: a hex-only title is tried as an id, finds nothing,
+    # and falls through to the title search, so a false positive costs nothing.
+    from jsonl_inspect.discovery import _looks_like_id
+
+    assert _looks_like_id("201b") is True
+    assert _looks_like_id("201b483d") is True
+    assert _looks_like_id("201b483d-70e6-44cd-a268-0cf9e1b64337") is True
+    assert _looks_like_id("abc") is False          # too short to risk
+    assert _looks_like_id("refactor") is False      # letters outside hex
+    assert _looks_like_id("Release #2") is False
+
+
+def test_resolve_target_by_id_prefix(tmp_path: Path, monkeypatch) -> None:
+    # Any unambiguous prefix resolves, like a git short sha — and an id that
+    # matches nothing falls through to the title search rather than erroring
+    # on the id itself.
+    from jsonl_inspect import discovery
+
+    proj = tmp_path / "-home-dev-work"
+    proj.mkdir()
+    rec = {"type": "user", "entrypoint": "cli", "promptSource": "typed",
+           "message": {"role": "user", "content": "hi"}}
+    for sid in ("201b483d-70e6-44cd-a268-0cf9e1b64337",
+                "afb38db4-1111-2222-3333-444444444444"):
+        (proj / f"{sid}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(discovery, "CLAUDE_PROJECTS_DIR", tmp_path)
+
+    assert discovery._resolve_target("201b").stem.startswith("201b483d")
+    assert discovery._resolve_target("afb3").stem.startswith("afb38db4")
+    # Full uuid works too.
+    assert discovery._resolve_target(
+        "201b483d-70e6-44cd-a268-0cf9e1b64337").stem.startswith("201b483d")
+
+
+def test_resolve_target_refuses_ambiguous_id(tmp_path: Path, monkeypatch) -> None:
+    # Two sessions can share a full uuid: moving a session between project
+    # directories leaves a stale copy behind. These actions write, so an
+    # ambiguous handle must stop and name both rather than guess.
+    from jsonl_inspect import discovery
+
+    sid = "8dd40bd9-5eb3-4f35-9b19-fd90b05ded95"
+    rec = {"type": "user", "entrypoint": "cli", "promptSource": "typed",
+           "message": {"role": "user", "content": "hi"}}
+    for name in ("-home-dev-one", "-home-dev-two"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / f"{sid}.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(discovery, "CLAUDE_PROJECTS_DIR", tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        discovery._resolve_target("8dd40bd9")
+    msg = str(exc.value)
+    assert "matches 2 sessions" in msg
+    # The copies are indistinguishable by id, so the message must say so.
+    assert "pass a path" in msg
