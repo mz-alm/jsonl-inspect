@@ -113,6 +113,17 @@ def _cli_run(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    # Tell the session what was done to its history. A trimmed transcript has
+    # gaps and tombstones in it, and a model reading one cold will otherwise
+    # either copy the marker into a live tool call or paper over a missing
+    # result — both observed. Only worth saying if something was actually
+    # removed, so empty passes stay silent.
+    notice = {"injected": False}
+    changed = [name for name, r in results
+               if r.get("n_mutated") or r.get("n_plucked")]
+    if changed and not args.no_notice:
+        notice = session.refresh_trim_notice(changed)
+
     wire_after = session.stats.wire_messages_bytes
     freed = max(0, wire_before - wire_after)
     payload: dict[str, Any] = {
@@ -123,6 +134,7 @@ def _cli_run(args: argparse.Namespace) -> int:
         "wire_bytes_before": wire_before,
         "wire_bytes_after": wire_after,
         "wire_bytes_freed": freed,
+        "notice": notice,
     }
 
     if args.dry_run:
@@ -148,6 +160,10 @@ def _cli_run(args: argparse.Namespace) -> int:
                 bits.append(f"{res[key]} {label}")
         detail = ", ".join(bits) or "nothing to do"
         print(f"  {name:<18} {detail}")
+    if notice.get("injected"):
+        sup = notice.get("superseded") or 0
+        print(f"  {'notice':<18} appended at the tip"
+              + (f" (superseded {sup})" if sup else ""))
 
     pct = (100 * freed / wire_before) if wire_before else 0
     print(f"\nwire {_fmt_bytes(wire_before)} → {_fmt_bytes(wire_after)} "
@@ -235,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="machine-readable output")
     opts.add_argument("--force", action="store_true",
                       help="write even if the session looks open in Claude Code")
+    opts.add_argument("--no-notice", action="store_true",
+                      help="skip the system-reminder that tells the session what was edited")
     opts.add_argument("--keep-thinking", type=int, default=1, metavar="N",
                       help="thinking-bearing turns to leave intact (default: 1)")
     opts.add_argument("--keep-tools", type=int, default=3, metavar="N",

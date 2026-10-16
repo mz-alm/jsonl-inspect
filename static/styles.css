@@ -480,6 +480,13 @@ html, body {
   border-color: var(--tag-tool-use);
 }
 
+/* The notice is the one op that adds rather than removes — coloured like the
+   system records it imitates, so it reads as scaffolding, not surgery. */
+.pending-list .op-type[data-type="notice"] {
+  color: var(--tag-system);
+  border-color: var(--tag-system);
+}
+
 .pending-list .op-detail {
   color: var(--text);
 }

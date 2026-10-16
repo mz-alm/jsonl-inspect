@@ -1190,7 +1190,11 @@ function renderPendingOpRow(op, i) {
   let subdetail = "";
   let fullIndicesList = null;
 
-  if (op.type === "pluck") {
+  if (op.type === "notice") {
+    detail = `idx ${op.idx}`;
+    subdetail = "system-reminder appended at the tip — tells the session its "
+      + `history was edited (${(op.actions || []).join(", ")})`;
+  } else if (op.type === "pluck") {
     const idxs = op.plucked_indices;
     if (idxs.length > BULK_THRESHOLD) {
       const head = idxs.slice(0, 3).join(", ");

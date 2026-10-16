@@ -16,7 +16,7 @@ import tempfile
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -353,6 +353,10 @@ MUTATIONS_FIELD = "_inspector_mutations"
 # Earlier surgeries used the bare token "[trimmed]" which the model could
 # confabulate into new tool calls — the namespaced form avoids that risk.
 TRIM_PLACEHOLDER = "[[jsonl-inspect::trimmed]]"
+
+# Marks the notice record appended after a reclamation pass. Lets a later pass
+# find and supersede its predecessor instead of stacking stale notices.
+NOTICE_FIELD = "_inspector_notice"
 
 
 def _now_iso() -> str:
@@ -1732,6 +1736,125 @@ class Session:
         result["keep_last_n"] = keep_last_n
         return result
 
+    def _build_notice_text(self, actions: list[str]) -> str:
+        """The reminder body, written from what this pass actually did.
+
+        Two of these lines exist because of observed harm, not theory:
+
+        - A session running on a trimmed transcript reported "whiplash" —
+          statements of things to be done followed immediately by conclusions,
+          with nothing in between. That shape (narrate -> gap -> continue) is
+          the same one that primes a model to describe a tool call it never
+          made, so the gap is named explicitly rather than left to be inferred.
+        - The placeholder has repeatedly leaked out of the history and into
+          live tool arguments, memory writes and agent prompts. Saying plainly
+          that it is a marker and never a value is the cheapest counter.
+        """
+        did = set(actions)
+        lines = [
+            "<system-reminder>",
+            "Part of this conversation's history was edited by jsonl-inspect, a local "
+            "tool that shrinks a transcript so a long session can keep going. This "
+            "note is from that tool, not from the user. What changed:",
+            "",
+        ]
+        if "strip-thinking" in did:
+            lines.append(
+                "- Reasoning blocks were removed from earlier assistant turns. Those "
+                "turns did involve reasoning; only the record of it is gone."
+            )
+        if "trim-tools" in did:
+            lines.append(
+                f"- Bulky tool inputs and results were replaced with the marker "
+                f"{TRIM_PLACEHOLDER}. It is a tombstone, never a value: do not copy "
+                f"it into a tool argument, a file you write, a memory, or a subagent "
+                f"prompt. If you need what it replaced, re-run the tool."
+            )
+        if "pluck-tools" in did:
+            lines.append(
+                "- Whole tool exchanges were removed. Where narration like \"let me "
+                "check X\" is followed straight away by a conclusion, the call did "
+                "happen and its record was deleted. Do not treat that as a pattern "
+                "to copy, and do not describe the result of a call you cannot see — "
+                "run it again or ask."
+            )
+        if "strip-images" in did:
+            lines.append(
+                "- Pasted images were removed. Any description of them in the "
+                "surrounding text still stands."
+            )
+        lines += [
+            "",
+            "Earlier turns may therefore look abrupt or incomplete. That is an "
+            "artifact of the edit, not of what happened. The removed content is "
+            "preserved on disk and the edit is reversible; if something you need is "
+            "missing, say so rather than reconstructing it.",
+            "</system-reminder>",
+        ]
+        return "\n".join(lines)
+
+    def refresh_trim_notice(self, actions: list[str]) -> dict[str, Any]:
+        """Append a notice at the tip telling the session what was edited.
+
+        Supersedes any previous notice (plucked, so its children re-thread
+        normally) so repeated passes leave exactly one, always describing the
+        most recent edit.
+
+        Shaped like Claude Code's own injected reminders rather than like a
+        user turn: `isMeta: true`, string content, a <system-reminder> body.
+        Scaffolding fields are copied from a neighbouring record instead of
+        invented, so the record matches the file it lands in.
+        """
+        if not actions:
+            return {"injected": False, "superseded": 0}
+
+        superseded = [
+            i for i, r in enumerate(self.records)
+            if r.get(NOTICE_FIELD) and PLUCK_FIELD not in r
+        ]
+        if superseded:
+            self.pluck_records(superseded)
+
+        # Parent to the current tip — the last record with a uuid that is still
+        # on the chain, so the notice extends the conversation rather than
+        # forking off a plucked one.
+        reachable = _compute_chain_reachable(self.records)
+        parent_uuid = None
+        for i in range(len(self.records) - 1, -1, -1):
+            if i in reachable and self.records[i].get("uuid"):
+                parent_uuid = self.records[i]["uuid"]
+                break
+
+        template: dict[str, Any] = {}
+        for r in reversed(self.records):
+            if r.get("type") in ("user", "assistant") and r.get("sessionId"):
+                template = r
+                break
+
+        record: dict[str, Any] = {
+            "type": "user",
+            "isMeta": True,
+            "isSidechain": False,
+            "userType": template.get("userType", "external"),
+            "message": {"role": "user", "content": self._build_notice_text(actions)},
+            "uuid": str(uuid.uuid4()),
+            "parentUuid": parent_uuid,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            NOTICE_FIELD: {"actions": sorted(set(actions)), "at": _now_iso()},
+        }
+        for key in ("cwd", "sessionId", "version", "gitBranch", "entrypoint"):
+            if key in template:
+                record[key] = template[key]
+
+        idx = len(self.records)
+        self.records.append(record)
+        self._raw_lines.append(json.dumps(record, ensure_ascii=False))
+        self.summaries.append(_analyze_record(idx, record))
+        self._modified.add(idx)
+        self._pending_ops.append({"type": "notice", "idx": idx, "actions": sorted(set(actions))})
+        self._refresh_stats()
+        return {"injected": True, "idx": idx, "superseded": len(superseded)}
+
     def strip_images(self, keep_last_n: int = 2) -> dict[str, Any]:
         """Replace pasted image blocks in chain-reachable records with a
         short placeholder, leaving any accompanying text untouched.
@@ -2099,6 +2222,12 @@ class Session:
                     "idx": op["idx"],
                     "field_path": op["field_path"],
                 })
+            elif t == "notice":
+                out.append({
+                    "type": "notice",
+                    "idx": op["idx"],
+                    "actions": op["actions"],
+                })
             elif t == "bulk_mutate":
                 out.append({
                     "type": "bulk_mutate",
@@ -2256,7 +2385,19 @@ class Session:
         op = self._pending_ops.pop()
         t = op["type"]
         affected_indices: list[int] = []
-        if t == "edit":
+        if t == "notice":
+            # The notice is always appended at the tail, and ops unwind LIFO,
+            # so the tail is always the one this op added. Guarded anyway:
+            # splicing a record out of the middle would shift every index
+            # after it, which no other op expects.
+            last = len(self.records) - 1
+            if last >= 0 and self.records[last].get(NOTICE_FIELD):
+                self.records.pop()
+                self._raw_lines.pop()
+                self.summaries.pop()
+                self._modified.discard(last)
+                affected_indices = []
+        elif t == "edit":
             self._do_edit(op["idx"], op["before"])
             affected_indices = [op["idx"]]
         elif t == "pluck":

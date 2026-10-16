@@ -109,6 +109,13 @@ session; like a git short sha, any unambiguous prefix works, so `201b` is
 usually enough. An ambiguous target lists the candidates and stops rather than
 guessing, since these actions write.
 
+After an edit, a `<system-reminder>` is appended at the end of the chain
+telling the session what was done to its history — which blocks were removed,
+and that a placeholder is a tombstone rather than a value it should ever pass
+to a tool. A session reading a trimmed transcript cold otherwise tends to
+either copy the marker into a live call or quietly invent the result of a call
+whose record is gone. `--no-notice` skips it.
+
 Tuning: `--keep-thinking N`, `--keep-tools N`, `--keep-images N`,
 `--threshold BYTES`, `--trim-images`. Safety: writes are refused if the session
 looks open (`--force` overrides), `--dry-run` is always allowed, and every save

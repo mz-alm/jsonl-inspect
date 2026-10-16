@@ -57,7 +57,8 @@ def _require_session(state: InspectorState) -> Session:
 
 
 
-def _quick_action_response(s: Session, result: dict[str, Any]) -> object:
+def _quick_action_response(s: Session, result: dict[str, Any],
+                           action: str | None = None) -> object:
     """Standard response shape for /api/quick-actions/* endpoints.
 
     Includes the raw `result` payload, the affected record summaries (preserved
@@ -76,6 +77,11 @@ def _quick_action_response(s: Session, result: dict[str, Any]) -> object:
     pluck op, affected = plucked_indices + re-threaded children). The frontend
     applies is_plucked/is_mutated visuals uniformly from the summaries.
     """
+    # Tell the session what was edited, the same as the CLI does. Only when
+    # something was actually removed: a no-op pass should add nothing.
+    if action and (result.get("n_mutated") or result.get("n_plucked")):
+        s.refresh_trim_notice([action])
+
     affected = list(set(result.get("preserved_indices", [])))
     did_something = (
         result.get("n_mutated", 0) > 0 or result.get("n_plucked", 0) > 0
@@ -475,7 +481,7 @@ def create_app(state: InspectorState) -> Flask:
             result = s.strip_thinking_blocks(keep_last_n=keep_last_n)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        return _quick_action_response(s, result)
+        return _quick_action_response(s, result, "strip-thinking")
 
     @app.route("/api/quick-actions/strip-images", methods=["POST"])
     def quick_action_strip_images() -> object:
@@ -488,7 +494,7 @@ def create_app(state: InspectorState) -> Flask:
             result = s.strip_images(keep_last_n=keep_last_n)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        return _quick_action_response(s, result)
+        return _quick_action_response(s, result, "strip-images")
 
     @app.route("/api/records/<int:idx>/break-sibling-merge", methods=["POST"])
     def record_break_sibling_merge(idx: int) -> object:
@@ -562,7 +568,7 @@ def create_app(state: InspectorState) -> Flask:
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        return _quick_action_response(s, result)
+        return _quick_action_response(s, result, "trim-tools")
 
     @app.route("/api/quick-actions/prune", methods=["POST"])
     def quick_action_prune() -> object:
@@ -591,6 +597,14 @@ def create_app(state: InspectorState) -> Flask:
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+
+        # One notice covering both sub-ops, rather than one each — it's a
+        # single pass from the user's point of view.
+        did = [name for name, res in (("strip-thinking", strip_res),
+                                      ("trim-tools", pluck_res))
+               if res.get("n_mutated") or res.get("n_plucked")]
+        if did:
+            s.refresh_trim_notice(did)
 
         # Union the affected indices from BOTH sub-ops so the frontend refreshes
         # every touched card in one pass.

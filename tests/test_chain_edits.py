@@ -1110,3 +1110,98 @@ def test_resolve_target_refuses_ambiguous_id(tmp_path: Path, monkeypatch) -> Non
     assert "matches 2 sessions" in msg
     # The copies are indistinguishable by id, so the message must say so.
     assert "pass a path" in msg
+
+
+# ---------------------------------------------------------------------------
+# the post-trim notice: telling the session what was done to its history
+
+
+def test_notice_matches_claude_codes_own_reminder_shape(simple_chain: Path) -> None:
+    """Injected as a meta user record with string content, the way Claude Code
+    stores its own <system-reminder> turns — so it reads as harness context
+    rather than as something the user typed."""
+    from jsonl_inspect.parser import NOTICE_FIELD
+
+    s = Session.load(simple_chain)
+    s.strip_thinking_blocks(keep_last_n=0)
+    res = s.refresh_trim_notice(["strip-thinking"])
+    assert res["injected"] is True
+
+    rec = s.records[-1]
+    assert rec["type"] == "user"
+    assert rec["isMeta"] is True
+    assert isinstance(rec["message"]["content"], str), "string form, not block list"
+    assert rec["message"]["content"].startswith("<system-reminder>")
+    assert NOTICE_FIELD in rec
+    # Parents to a real record, and becomes the tip itself.
+    assert any(r.get("uuid") == rec["parentUuid"] for r in s.records[:-1])
+
+    s.save()
+    reloaded = Session.load(simple_chain)
+    assert reloaded.records[-1].get(NOTICE_FIELD), "survives the round trip"
+
+
+def test_notice_names_the_hazard_of_the_action_that_ran() -> None:
+    """The two warnings exist because of observed harm: the placeholder leaking
+    into live tool arguments, and a session papering over a call whose record
+    was removed. Each must appear only for the action that causes it."""
+    from jsonl_inspect.parser import TRIM_PLACEHOLDER
+
+    s = Session.__new__(Session)  # text builder needs no loaded file
+
+    trimmed = s._build_notice_text(["trim-tools"])
+    assert TRIM_PLACEHOLDER in trimmed
+    assert "never a value" in trimmed
+    assert "let me check X" not in trimmed, "gap warning is for plucking, not trimming"
+
+    plucked = s._build_notice_text(["pluck-tools"])
+    assert "let me check X" in plucked
+    assert "do not describe the result of a call you cannot see" in plucked
+    assert TRIM_PLACEHOLDER not in plucked, "no tombstone warning when none was left"
+
+    thinking = s._build_notice_text(["strip-thinking"])
+    assert "Reasoning blocks were removed" in thinking
+
+
+def test_notice_supersedes_rather_than_stacking(simple_chain: Path) -> None:
+    """Repeated passes must leave exactly one live notice — otherwise every
+    trim adds another copy to the context the tool exists to shrink."""
+    from jsonl_inspect.parser import NOTICE_FIELD, PLUCK_FIELD
+
+    s = Session.load(simple_chain)
+    s.refresh_trim_notice(["strip-thinking"])
+    first = s.records[-1]["uuid"]
+    s.refresh_trim_notice(["pluck-tools"])
+
+    live = [r for r in s.records if r.get(NOTICE_FIELD) and PLUCK_FIELD not in r]
+    assert len(live) == 1, "exactly one live notice"
+    assert live[0]["uuid"] != first, "the survivor is the new one"
+    assert "let me check X" in live[0]["message"]["content"], "describes the latest pass"
+    # The old one is still on disk, unlinked — not deleted.
+    stale = [r for r in s.records if r.get(NOTICE_FIELD) and PLUCK_FIELD in r]
+    assert len(stale) == 1
+
+
+def test_undo_removes_the_notice(simple_chain: Path) -> None:
+    from jsonl_inspect.parser import NOTICE_FIELD
+
+    s = Session.load(simple_chain)
+    before = len(s.records)
+    s.refresh_trim_notice(["strip-thinking"])
+    assert len(s.records) == before + 1
+    s.undo_last()
+    assert len(s.records) == before
+    assert not any(r.get(NOTICE_FIELD) for r in s.records)
+    assert len(s._raw_lines) == before and len(s.summaries) == before
+
+
+def test_discard_removes_the_notice(simple_chain: Path) -> None:
+    from jsonl_inspect.parser import NOTICE_FIELD
+
+    s = Session.load(simple_chain)
+    before = len(s.records)
+    s.strip_thinking_blocks(keep_last_n=0)
+    s.refresh_trim_notice(["strip-thinking"])
+    s.discard_all()
+    assert len(s.records) == before
+    assert not any(r.get(NOTICE_FIELD) for r in s.records)
