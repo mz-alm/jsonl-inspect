@@ -2,7 +2,8 @@
 
 Two modes:
 - Picker mode (no session loaded): serves a browser for ~/.claude/projects/
-  directories and their .jsonl sessions. User picks one to load.
+  (or $CLAUDE_CONFIG_DIR/projects/) directories and their .jsonl sessions.
+  User picks one to load.
 - Inspector mode (session loaded): the full inspector UI from prior phases.
 
 The server starts in picker mode if launched with no file argument, or in

@@ -11,11 +11,26 @@ one; cli.py and server.py are the two front-ends over both.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
 
-CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+def _claude_projects_dir() -> Path:
+    """Where Claude Code keeps session transcripts.
+
+    Claude Code moves its whole config dir -- sessions included -- to
+    $CLAUDE_CONFIG_DIR when that's set, which is how people run one login
+    per account (`CLAUDE_CONFIG_DIR=~/.claude-work claude`). Reading only
+    ~/.claude would silently look at the wrong account's sessions.
+    """
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
+    return base / "projects"
+
+
+CLAUDE_PROJECTS_DIR = _claude_projects_dir()
 
 # Cheap pre-filter for the session-title scan: matches both Claude Code's
 # compact and default JSON formatting (with/without space after the colon).

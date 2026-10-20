@@ -109,6 +109,14 @@ session; like a git short sha, any unambiguous prefix works, so `201b` is
 usually enough. An ambiguous target lists the candidates and stops rather than
 guessing, since these actions write.
 
+Sessions are looked up in `~/.claude/projects`, or in `$CLAUDE_CONFIG_DIR/projects`
+when that's set — the same place Claude Code itself uses. If you keep one config
+dir per account, point at the one you want:
+
+```bash
+CLAUDE_CONFIG_DIR=~/.claude-work jsonl-inspect --list
+```
+
 After an edit, a `<system-reminder>` is appended at the end of the chain
 telling the session what was done to its history — which blocks were removed,
 and that a placeholder is a tombstone rather than a value it should ever pass

@@ -1112,6 +1112,21 @@ def test_resolve_target_refuses_ambiguous_id(tmp_path: Path, monkeypatch) -> Non
     assert "pass a path" in msg
 
 
+def test_projects_dir_follows_claude_config_dir(tmp_path: Path, monkeypatch) -> None:
+    # One config dir per account (CLAUDE_CONFIG_DIR=~/.claude-work claude)
+    # puts that account's sessions under it, not under ~/.claude.
+    from jsonl_inspect import discovery
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-work"))
+    assert discovery._claude_projects_dir() == tmp_path / "claude-work" / "projects"
+
+    # Unset or empty falls back to the default, as Claude Code does.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert discovery._claude_projects_dir() == Path.home() / ".claude" / "projects"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    assert discovery._claude_projects_dir() == Path.home() / ".claude" / "projects"
+
+
 # ---------------------------------------------------------------------------
 # the post-trim notice: telling the session what was done to its history
 
